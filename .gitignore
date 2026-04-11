@@ -1,0 +1,29 @@
+# Python / Django
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.sqlite3
+*.log
+
+# Virtual environment
+venv/
+Lib/
+Scripts/
+
+# Django / media / uploads
+media/
+*.db
+
+# Environment variables
+.env
+
+# VSCode
+.vscode/
+
+# OS files
+.DS_Store
+
+# Node modules (if using React inside backend)
+node_modules/
+build/
