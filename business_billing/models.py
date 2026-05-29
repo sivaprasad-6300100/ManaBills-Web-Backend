@@ -2,7 +2,9 @@ from django.db import models
 from django.core.validators import MinValueValidator
 from django.contrib.postgres.indexes import GinIndex
 from accounts.models import User
-
+# import uuid
+from django.db.models.signals import post_save
+from django.dispatch import receiver
 
 # ═══════════════════════════════════════════════════════════════
 #   1.  SHOP PROFILE
@@ -31,10 +33,10 @@ class ShopProfile(models.Model):
     mobile       = models.CharField(max_length=15)
     extra_mobile = models.CharField(max_length=15, blank=True, default="")
     address      = models.TextField()
-    shop_type    = models.CharField(
-                       max_length=30, choices=SHOP_TYPE_CHOICES,
-                       blank=True, default=""
-                   )
+    shop_type = models.CharField(   
+        max_length=100,  # increased for custom names
+        blank=True, default=""
+    )
     timings      = models.CharField(max_length=100, blank=True, default="")
 
     # GST
@@ -128,7 +130,7 @@ class Product(models.Model):
                      )
     name           = models.CharField(max_length=255)
     category       = models.CharField(max_length=100, blank=True, default="General")
-    unit           = models.CharField(max_length=20, choices=UNIT_CHOICES, default="piece")
+    unit           = models.CharField(max_length=20, default="piece")
     purchase_price = models.DecimalField(
                          max_digits=12, decimal_places=2, default=0,
                          validators=[MinValueValidator(0)]
@@ -173,6 +175,17 @@ class Product(models.Model):
                          max_digits=10, decimal_places=2, default=0,
                          validators=[MinValueValidator(0)]
                      )
+    
+    # ── GST / ITC fields (ADD THESE) ──────────────────────────
+    gst_rate         = models.DecimalField(max_digits=5, decimal_places=2, default=0)
+    purchase_gst     = models.DecimalField(max_digits=10, decimal_places=2, default=0,
+                           validators=[MinValueValidator(0)])
+    supplier_gstin   = models.CharField(max_length=15, blank=True, default="")
+    purchase_invoice = models.CharField(max_length=100, blank=True, default="")
+    purchase_date    = models.DateField(null=True, blank=True)
+    sale_type        = models.CharField(max_length=10, default="intra")  # intra/inter
+    gst_inclusive    = models.BooleanField(default=True)
+    sub_category     = models.CharField(max_length=100, blank=True, default="")
 
     is_active  = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -410,3 +423,175 @@ class StockTransaction(models.Model):
 
     def __str__(self):
         return f"{self.tx_type} | {self.product.name} | qty={self.qty}"
+    
+
+    # ----------------------------------------------------------------
+    # -----------------------------------------------------
+    # -------------------------------------
+    # -----------------------------fr   
+
+class ShopScanner(models.Model):
+    """
+    One QR scanner per shop — generated when shop profile is created.
+    scanner_id is the unique token embedded in the QR code URL.
+    """
+    user        = models.OneToOneField(User, on_delete=models.CASCADE, related_name="shop_scanner")
+    scanner_id = models.CharField(max_length=100, unique=True, default="")
+    is_active   = models.BooleanField(default=True)
+    scan_count  = models.PositiveIntegerField(default=0)
+    created_at  = models.DateTimeField(auto_now_add=True)
+    updated_at  = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Shop Scanner"
+
+    def __str__(self):
+        return f"Scanner for {self.user.shop_profile.shop_name} — {self.scanner_id}"
+
+    @property
+    def qr_url(self):
+        """The URL that gets embedded in the QR code"""
+        return f"https://manabills.in/shop/{self.scanner_id}"
+
+
+class CustomerOrder(models.Model):
+    """
+    Orders placed by customers via QR scan.
+    These are separate from invoices — owner converts to invoice on completion.
+    """
+    STATUS_CHOICES = [
+        ("new",       "New Order"),
+        ("packing",   "Packing"),
+        ("ready",     "Ready for Pickup"),
+        ("completed", "Completed"),
+        ("cancelled", "Cancelled"),
+    ]
+
+    # Shop & scanner linkage
+    user    = models.ForeignKey(User, on_delete=models.CASCADE, related_name="customer_orders")
+    scanner = models.ForeignKey(ShopScanner, on_delete=models.SET_NULL, null=True)
+
+    # Order ID (human-readable)
+    order_id        = models.CharField(max_length=20, unique=True)
+
+    # Customer details (no login required)
+    customer_name   = models.CharField(max_length=255)
+    customer_mobile = models.CharField(max_length=15)
+
+    # Financials
+    subtotal  = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    advance   = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    balance   = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+
+    # Status
+    status    = models.CharField(max_length=15, choices=STATUS_CHOICES, default="new")
+
+    # Linked invoice (created when order is completed)
+    invoice   = models.OneToOneField(
+        "Invoice", on_delete=models.SET_NULL,
+        null=True, blank=True, related_name="source_order"
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.order_id} — {self.customer_name} — {self.status}"
+
+    def save(self, *args, **kwargs):
+        self.balance = self.subtotal - self.advance
+        if not self.order_id:
+            from datetime import date
+            today = date.today()
+            count = CustomerOrder.objects.filter(user=self.user, created_at__date=today).count()
+            self.order_id = f"ORD-{today.strftime('%y%m%d')}-{str(count + 1).zfill(3)}"
+        super().save(*args, **kwargs)
+
+
+class CustomerOrderItem(models.Model):
+    """Line items inside a customer order"""
+    order   = models.ForeignKey(CustomerOrder, on_delete=models.CASCADE, related_name="items")
+    product = models.ForeignKey("Product", on_delete=models.SET_NULL, null=True, blank=True)
+    name    = models.CharField(max_length=255)
+    qty     = models.DecimalField(max_digits=10, decimal_places=2)
+    price   = models.DecimalField(max_digits=10, decimal_places=2)
+    unit    = models.CharField(max_length=20, default="piece")
+    amount  = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+
+    def save(self, *args, **kwargs):
+        self.amount = self.qty * self.price
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.name} × {self.qty} — {self.order.order_id}"
+
+
+class ShopNotification(models.Model):
+    """In-app notifications for shop owner"""
+    TYPE_CHOICES = [
+        ("new_order", "New Order"),
+        ("payment",   "Balance Payment"),
+        ("ready",     "Order Ready"),
+        ("low_stock", "Low Stock Alert"),
+    ]
+
+    user      = models.ForeignKey(User, on_delete=models.CASCADE, related_name="shop_notifications")
+    order     = models.ForeignKey(CustomerOrder, on_delete=models.CASCADE, null=True, blank=True)
+    notif_type= models.CharField(max_length=20, choices=TYPE_CHOICES)
+    message   = models.TextField()
+    is_read   = models.BooleanField(default=False)
+    created_at= models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+
+# @receiver(post_save, sender='accounts.User')
+# def create_scanner_for_user(sender, instance, created, **kwargs):
+    # if created:
+        # phone = getattr(instance, 'mobile_number', '') or str(instance.pk)
+        # ShopScanner.objects.get_or_create(
+            # user=instance,
+            # defaults={
+                # "scanner_id": f"mb-{phone}-001",
+                # "is_active": True,
+            # }
+        # )
+
+
+@receiver(post_save, sender=ShopProfile)
+def create_scanner_on_shop_profile(sender, instance, created, **kwargs):
+    if created:
+        phone = getattr(instance.user, 'mobile_number', '') or str(instance.user.pk)
+        ShopScanner.objects.get_or_create(
+            user=instance.user,
+            defaults={
+                "scanner_id": f"mb-{phone}-001",
+                "is_active": True,
+            }
+        )
+
+
+class GstPayment(models.Model):
+    """Tracks which months the user has paid GST to government"""
+    user       = models.ForeignKey(User, on_delete=models.CASCADE, related_name="gst_payments")
+    year       = models.IntegerField()
+    month      = models.IntegerField()  # 1-12
+    is_paid    = models.BooleanField(default=False)
+    paid_date  = models.DateField(null=True, blank=True)
+    paid_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ["user", "year", "month"]
+        ordering = ["year", "month"]
+
+    def __str__(self):
+        return f"{self.user} — {self.year}/{self.month} — {'Paid' if self.is_paid else 'Unpaid'}"
+
+

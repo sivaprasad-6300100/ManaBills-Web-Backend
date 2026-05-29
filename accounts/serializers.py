@@ -45,6 +45,7 @@ class LoginSerializer(serializers.Serializer):
             "refresh": str(refresh),
             "access": str(refresh.access_token),
             "user_id": user.id,
+            "full_name": user.full_name,
             "mobile_number": user.mobile_number
         }
 

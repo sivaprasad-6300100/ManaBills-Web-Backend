@@ -44,6 +44,7 @@ INSTALLED_APPS = [
     "corsheaders",
     'accounts',
     "business_billing",
+    "subscriptions",
 
 ]
 
@@ -160,6 +161,15 @@ SIMPLE_JWT = {
     'AUTH_HEADER_TYPES': ('Bearer',),
 }
 
+
+
+# razorpay_api_ key and links
+RAZORPAY_KEY_ID = "rzp_test_SgQPeC1QVxeV77"
+RAZORPAY_KEY_SECRET = "HttLnQ6vxzpNOaBhmwhj3lZf"
+
+
+
+
 # Allow your React app to access backend
 # Allow React (laptop + mobile) to access backend (DEV MODE)
 CORS_ALLOW_ALL_ORIGINS = True
@@ -167,9 +177,9 @@ CORS_ALLOW_CREDENTIALS = True
 
 CSRF_TRUSTED_ORIGINS = [
     "http://localhost:3000",
-    "http://192.168.31.12:3000",
+    "http://192.168.0.101:3000",
 ]
-
-
-# ALLOWED_HOSTS = ["127.0.0.1", "localhost", "192.168.31.11"]
- 
+    
+# 192.168.0.106  192.168.100.7
+# 192.168.0.106  192.168.100.7
+# ALLOWED_HOSTS = ["127.0.0.1", "localhost", "192.168.31.11"]py m   

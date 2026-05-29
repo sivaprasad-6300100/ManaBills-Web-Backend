@@ -41,6 +41,17 @@ class ProductSerializer(serializers.ModelSerializer):
 
     is_low_stock = serializers.BooleanField(read_only=True)
     stock_value  = serializers.FloatField(read_only=True)
+    purchase_date = serializers.DateField(required=False, allow_null=True)
+    
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        # Auto-fill purchase_gst if it's 0 but price+rate exist
+        if float(data.get('purchase_gst') or 0) == 0:
+            pp   = float(data.get('purchase_price') or 0)
+            rate = float(data.get('gst_rate') or 0)
+            if pp > 0 and rate > 0:
+                data['purchase_gst'] = round(pp * rate / 100, 2)
+        return data
 
     class Meta:
         model  = Product
@@ -49,6 +60,10 @@ class ProductSerializer(serializers.ModelSerializer):
             "id", "name", "category", "unit",
             "purchase_price", "selling_price",
             "qty", "min_qty_alert", "hsn_code",
+            "gst_rate", "purchase_gst",          # ← ADD
+            "supplier_gstin", "purchase_invoice", # ← ADD
+            "purchase_date", "sale_type",         # ← ADD
+            "gst_inclusive", 
             "shop_type", "is_active",
 
             # Clothing
@@ -299,3 +314,153 @@ class DashboardStatsSerializer(serializers.Serializer):
     stock_items         = serializers.IntegerField()
     stock_value         = serializers.FloatField()
     low_stock_count     = serializers.IntegerField()
+
+    # ------------------------------------------
+    # -------------------------------
+    # ----------------------
+    # ------------
+    """
+Add these serializers to business_billing/serializers.py
+"""
+from rest_framework import serializers
+from .models import ShopScanner, ShopProfile, Product, CustomerOrder, CustomerOrderItem, ShopNotification
+from decimal import Decimal
+
+
+class ShopScannerSerializer(serializers.ModelSerializer):
+    qr_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model  = ShopScanner
+        fields = ["id", "scanner_id", "is_active", "scan_count", "qr_url", "created_at"]
+        read_only_fields = ["id", "scanner_id", "scan_count", "qr_url", "created_at"]
+
+    def get_qr_url(self, obj):
+        request = self.context.get("request")
+        if request:
+            scheme = "https" if request.is_secure() else "http"
+            host = request.META.get("HTTP_HOST", "").replace(":8000", ":3000")
+            return f"{scheme}://{host}/shop/{obj.scanner_id}"
+        return f"https://manabills.in/shop/{obj.scanner_id}"
+    
+
+    
+class PublicShopSerializer(serializers.ModelSerializer):
+    """Minimal shop info for public QR page — no sensitive data"""
+    class Meta:
+        model  = ShopProfile
+        fields = ["shop_name", "owner_name", "address", "shop_type", "timings", "logo_url"]
+
+
+class PublicProductSerializer(serializers.ModelSerializer):
+    """Products shown to customer — only what they need"""
+    class Meta:
+        model  = Product
+        fields = ["id", "name", "category", "unit", "selling_price", "qty", "min_qty_alert"]
+
+
+class CustomerOrderItemWriteSerializer(serializers.Serializer):
+    product_id = serializers.IntegerField()
+    qty        = serializers.DecimalField(max_digits=10, decimal_places=2)
+
+
+class CustomerOrderWriteSerializer(serializers.Serializer):
+    customer_name   = serializers.CharField(max_length=255)
+    customer_mobile = serializers.CharField(max_length=15)
+    advance         = serializers.DecimalField(max_digits=12, decimal_places=2)
+    items           = CustomerOrderItemWriteSerializer(many=True)
+
+    def validate(self, data):
+        scanner  = self.context["scanner"]
+        items    = data.get("items", [])
+        advance  = data.get("advance", Decimal("0"))
+
+        if not items:
+            raise serializers.ValidationError({"items": "At least one item required."})
+        if advance < Decimal("10"):
+            raise serializers.ValidationError({"advance": "Minimum advance is ₹10."})
+
+        # Validate products belong to this shop and have stock
+        errors = []
+        for item in items:
+            try:
+                product = Product.objects.get(id=item["product_id"], user=scanner.user, is_active=True)
+                if product.qty < item["qty"]:
+                    errors.append(f'"{product.name}": only {product.qty} {product.unit} available.')
+            except Product.DoesNotExist:
+                errors.append(f'Product ID {item["product_id"]} not found.')
+
+        if errors:
+            raise serializers.ValidationError({"stock": errors})
+
+        return data
+
+    def create(self, validated_data):
+        scanner  = self.context["scanner"]
+        items    = validated_data.pop("items")
+        advance  = validated_data["advance"]
+
+        # Calculate subtotal
+        subtotal = Decimal("0")
+        product_map = {}
+        for item in items:
+            product = Product.objects.get(id=item["product_id"])
+            product_map[item["product_id"]] = product
+            subtotal += product.selling_price * item["qty"]
+
+        if advance > subtotal:
+            raise serializers.ValidationError({"advance": "Advance cannot exceed total."})
+
+        order = CustomerOrder.objects.create(
+            user            = scanner.user,
+            scanner         = scanner,
+            customer_name   = validated_data["customer_name"],
+            customer_mobile = validated_data["customer_mobile"],
+            subtotal        = subtotal,
+            advance         = advance,
+            status          = "new",
+        )
+
+        # Create order items
+        for item in items:
+            product = product_map[item["product_id"]]
+            CustomerOrderItem.objects.create(
+                order   = order,
+                product = product,
+                name    = product.name,
+                qty     = item["qty"],
+                price   = product.selling_price,
+                unit    = product.unit,
+            )
+
+        return order
+
+
+class CustomerOrderItemReadSerializer(serializers.ModelSerializer):
+    class Meta:
+        model  = CustomerOrderItem
+        fields = ["id", "name", "qty", "price", "unit", "amount"]
+
+
+class CustomerOrderReadSerializer(serializers.ModelSerializer):
+    items = CustomerOrderItemReadSerializer(many=True, read_only=True)
+
+    class Meta:
+        model  = CustomerOrder
+        fields = [
+            "id", "order_id", "customer_name", "customer_mobile",
+            "subtotal", "advance", "balance", "status",
+            "items", "created_at", "updated_at",
+        ]
+
+
+class ShopNotificationSerializer(serializers.ModelSerializer):
+    order_id = serializers.CharField(source="order.order_id", read_only=True, allow_null=True)
+
+    class Meta:
+        model  = ShopNotification
+        fields = ["id", "notif_type", "message", "is_read", "order_id", "created_at"]
+
+
+
+
