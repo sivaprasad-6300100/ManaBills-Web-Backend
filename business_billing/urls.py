@@ -21,7 +21,7 @@ urlpatterns = [
     path("invoices/<int:pk>/mark-paid/", views.InvoiceMarkPaidView.as_view()),
     path("stock-transactions/",     views.StockTransactionListView.as_view()),
     path("gst-reports/",            views.gst_reports),
-    path("business/gst-mark-paid/", views.mark_gst_paid),
+    path("gst-mark-paid/", views.mark_gst_paid),
     path("dashboard/",              views.dashboard_stats),     
     path("orders/",                 views.CustomerOrderListView.as_view()),      
     path("orders/<int:pk>/",        views.CustomerOrderDetailView.as_view()),    
@@ -44,7 +44,7 @@ urlpatterns = [
     
     # Add these 2 lines inside urlpatterns:
     path(
-        'business/invoices/public/<str:invoice_id>/',
+        'invoices/public/<str:invoice_id>/',
         views.public_invoice_view,
         name='public-invoice'
     ),
