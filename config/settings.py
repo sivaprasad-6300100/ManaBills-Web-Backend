@@ -138,13 +138,22 @@ SIMPLE_JWT = {
 RAZORPAY_KEY_ID = os.environ.get('RAZORPAY_KEY_ID', 'rzp_test_SgQPeC1QVxeV77')
 RAZORPAY_KEY_SECRET = os.environ.get('RAZORPAY_KEY_SECRET', 'HttLnQ6vxzpNOaBhmwhj3lZf')
 
+
 # CORS
+CORS_ALLOW_ALL_ORIGINS = False
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "https://www.manabills.com",
     "https://manabills.com",
 ]
 CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_HEADERS = [
+    "accept",
+    "authorization",
+    "content-type",
+    "origin",
+    "x-requested-with",
+]
 
 CSRF_TRUSTED_ORIGINS = [
     "http://localhost:3000",
