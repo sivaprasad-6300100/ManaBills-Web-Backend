@@ -1,6 +1,7 @@
 from django.urls import path
 from . import views
-from .views import PublicShopView, PlaceOrderView, PublicOrdersByMobileView
+from .views import PublicShopView, PlaceOrderView, PublicOrdersByMobileView  ,RegisterDeviceView, DeviceListView
+
 
 
 
@@ -36,7 +37,24 @@ urlpatterns = [
     path("shop/<str:scanner_id>/orders/",             views.PublicOrdersByMobileView.as_view()),
     path("shop/<str:scanner_id>/create-razorpay-order/", views.create_razorpay_order),
     path("shop/<str:scanner_id>/verify-payment/",    views.verify_payment),
+
+
+    
+    path('itc-opening-balance/', views.itc_opening_balance),
     
     # Add these 2 lines inside urlpatterns:
+    path(
+        'business/invoices/public/<str:invoice_id>/',
+        views.public_invoice_view,
+        name='public-invoice'
+    ),
+
+    # invoices numbers generate url 
+    path('invoices/next-id/', views.NextInvoiceIdView.as_view()),
+
+    path("auth/register-device/",         RegisterDeviceView.as_view()),
+    path("auth/devices/",                  DeviceListView.as_view()),
+    path("auth/devices/<str:device_id>/",  DeviceListView.as_view()),
+
 
 ]   

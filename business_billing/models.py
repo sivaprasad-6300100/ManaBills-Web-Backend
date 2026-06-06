@@ -5,6 +5,9 @@ from accounts.models import User
 # import uuid
 from django.db.models.signals import post_save
 from django.dispatch import receiver
+# from django.auth.models import settings
+from django.conf import settings
+
 
 # ═══════════════════════════════════════════════════════════════
 #   1.  SHOP PROFILE
@@ -358,6 +361,7 @@ class InvoiceItem(models.Model):
     price      = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     unit       = models.CharField(max_length=20, default="piece")
     amount     = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    gst_rate   = models.DecimalField(max_digits=5, decimal_places=2, default=0)  # ← ADD
 
     # Stock flag — True if this item was linked to a stock product
     is_stock_item = models.BooleanField(default=False)
@@ -595,3 +599,38 @@ class GstPayment(models.Model):
         return f"{self.user} — {self.year}/{self.month} — {'Paid' if self.is_paid else 'Unpaid'}"
 
 
+
+
+
+
+class GstITCBalance(models.Model):
+    user        = models.ForeignKey(User, on_delete=models.CASCADE)
+    year        = models.IntegerField()
+    opening_itc = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    updated_at  = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        unique_together = ["user", "year"]  # One record per user per year
+
+
+
+
+# Add to your existing models.py
+
+class UserDeviceSession(models.Model):
+    user         = models.ForeignKey(
+                       settings.AUTH_USER_MODEL, 
+                       on_delete=models.CASCADE, 
+                       related_name="device_sessions"
+                   )
+    device_id    = models.CharField(max_length=200)   # browser fingerprint
+    device_name  = models.CharField(max_length=100, default="Unknown Device")
+    last_active  = models.DateTimeField(auto_now=True)
+    is_active    = models.BooleanField(default=True)
+    created_at   = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ["user", "device_id"]
+
+    def __str__(self):
+        return f"{self.user} — {self.device_name} ({self.device_id[:12]}...)"

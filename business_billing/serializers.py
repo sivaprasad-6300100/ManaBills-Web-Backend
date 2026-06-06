@@ -1,6 +1,9 @@
 from rest_framework import serializers
 from django.db import transaction as db_transaction
 from .models import ShopProfile, Customer, Product, Invoice, InvoiceItem, StockTransaction
+from rest_framework import serializers
+from .models import Invoice, InvoiceItem
+
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -113,6 +116,7 @@ class InvoiceItemSerializer(serializers.ModelSerializer):
         fields = [
             "id", "product", "name", "qty",
             "price", "unit", "amount", "is_stock_item",
+            "gst_rate",
         ]
         read_only_fields = ["id", "amount"]
 
@@ -154,7 +158,7 @@ class InvoiceItemWriteSerializer(serializers.Serializer):
     price        = serializers.DecimalField(max_digits=10, decimal_places=2)
     unit         = serializers.CharField(max_length=20, default="piece")
     is_stock_item= serializers.BooleanField(default=False)
-
+    gst_rate     = serializers.DecimalField(max_digits=5, decimal_places=2, default=0)
 
 class InvoiceWriteSerializer(serializers.ModelSerializer):
 
@@ -180,7 +184,15 @@ class InvoiceWriteSerializer(serializers.ModelSerializer):
 
         if not items:
             raise serializers.ValidationError({"items": "At least one item is required."})
+        
+        # ★ Recalculate gst_amt from per-item rates
+        computed_gst = sum(
+            float(i["qty"]) * float(i["price"]) * float(i.get("gst_rate", 0)) / 100
+            for i in items
+        )
+        data["gst_amt"] = round(computed_gst, 2)
 
+        
         # Validate stock availability BEFORE saving anything
         errors = []
         for item in items:
@@ -238,6 +250,7 @@ class InvoiceWriteSerializer(serializers.ModelSerializer):
                 price        = item_data["price"],
                 unit         = item_data.get("unit", "piece"),
                 is_stock_item= is_stock_item,
+                gst_rate      = item_data.get("gst_rate", 0),
             )
 
             # Auto-deduct stock
@@ -300,22 +313,6 @@ class GstMonthReportSerializer(serializers.Serializer):
 # ═══════════════════════════════════════════════════════════════
 #   DASHBOARD STATS
 # ═══════════════════════════════════════════════════════════════
-class DashboardStatsSerializer(serializers.Serializer):
-
-    today_sales         = serializers.FloatField()
-    today_invoice_count = serializers.IntegerField()
-    unpaid_amount       = serializers.FloatField()
-    paid_amount         = serializers.FloatField()
-    month_billing       = serializers.FloatField()
-    month_invoice_count = serializers.IntegerField()
-    total_billing       = serializers.FloatField()
-    invoice_count       = serializers.IntegerField()
-    customer_count      = serializers.IntegerField()
-    stock_items         = serializers.IntegerField()
-    stock_value         = serializers.FloatField()
-    low_stock_count     = serializers.IntegerField()
-
-    # ------------------------------------------
     # -------------------------------
     # ----------------------
     # ------------
@@ -464,3 +461,72 @@ class ShopNotificationSerializer(serializers.ModelSerializer):
 
 
 
+
+class InvoiceItemSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = InvoiceItem
+        fields = [
+            'id', 'name', 'qty', 'price', 'unit',
+            'product', 'is_stock_item',
+        ]
+
+class PublicInvoiceSerializer(serializers.ModelSerializer):
+    """
+    Read-only serializer for public invoice view.
+    Returns everything the customer needs to see.
+    No sensitive shop owner data included.
+    """
+    items = InvoiceItemSerializer(
+        many=True,
+        source='invoice_items',   # ← use your actual related_name
+        read_only=True
+    )
+
+    class Meta:
+        model = Invoice
+        fields = [
+            'invoice_id',
+            'date',
+            'customer_name',
+            'customer_mobile',
+            'customer_gst',
+            'shop_name',
+            'shop_address',
+            'shop_gst',
+            'is_gst',
+            'subtotal',
+            'gst_amt',
+            'discount',
+            'advance',
+            'total',
+            'balance',
+            'payment',
+            'status',
+            'items',
+        ]
+
+
+
+class DashboardStatsSerializer(serializers.Serializer):
+    today_sales          = serializers.FloatField()
+    today_invoice_count  = serializers.IntegerField()
+    today_paid_amount    = serializers.FloatField()
+    today_unpaid_amount  = serializers.FloatField()
+
+    week_billing         = serializers.FloatField()
+    week_invoice_count   = serializers.IntegerField()
+    week_paid_amount     = serializers.FloatField()
+    week_unpaid_amount   = serializers.FloatField()
+
+    month_billing        = serializers.FloatField()
+    month_invoice_count  = serializers.IntegerField()
+    paid_amount          = serializers.FloatField()
+    unpaid_amount        = serializers.FloatField()
+
+    total_billing        = serializers.FloatField()
+    invoice_count        = serializers.IntegerField()
+    customer_count       = serializers.IntegerField()
+    stock_items          = serializers.IntegerField()
+    stock_value          = serializers.FloatField()
+    low_stock_count      = serializers.IntegerField()
+    recent_invoices      = serializers.ListField(default=[])

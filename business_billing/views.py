@@ -5,10 +5,14 @@ from rest_framework.views import APIView
 from django.db.models import Sum, Count, Q, F
 from django.utils import timezone
 from datetime import date
+from rest_framework import status
 from decimal import Decimal
 import razorpay
 from django.conf import settings
 from django.http import JsonResponse
+from .serializers import PublicInvoiceSerializer
+from rest_framework.permissions import AllowAny
+from .models import Invoice
 import json
 from django.views.decorators.csrf import csrf_exempt
 client = razorpay.Client(auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET))
@@ -512,75 +516,6 @@ def mark_gst_paid(request):
         "paid_amount": paid_amount,
     })
 
-# ═══════════════════════════════════════════════════════════════
-#   7.  DASHBOARD STATS (OPTIMIZED)
-# ═══════════════════════════════════════════════════════════════
-@api_view(["GET"])
-@permission_classes([permissions.IsAuthenticated])
-def dashboard_stats(request):
-    """
-    GET /api/business/dashboard/
-    Returns all 12 KPI numbers — single optimized query with aggregates.
-    Replaces 6 separate database round trips with 1 efficient query.
-    """
-    user = request.user
-    today = _today_str()
-    now = timezone.now()
-
-    invoices = Invoice.objects.filter(user=user)
-
-    # Single aggregation query — all metrics at once
-    agg = invoices.aggregate(
-        # Today
-        today_sales=Sum("total", filter=Q(date=today)),
-        today_count=Count("id", filter=Q(date=today)),
-
-        # This month
-        month_billing=Sum("total", filter=Q(
-            created_at__month=now.month,
-            created_at__year=now.year
-        )),
-        month_count=Count("id", filter=Q(
-            created_at__month=now.month,
-            created_at__year=now.year
-        )),
-
-        # All-time
-        total_billing=Sum("total"),
-        invoice_count=Count("id"),
-
-        # Paid / Unpaid
-        paid_amount=Sum("advance", filter=Q(status="Paid")),
-        unpaid_amount=Sum("balance", filter=Q(status__in=["Pending", "Partial"])),
-    )
-
-    # Stock stats (2nd query — unavoidable for complex stock value calc)
-    products = Product.objects.filter(user=user, is_active=True)
-    stock_items = products.count()
-    low_stock_count = products.filter(qty__lte=F("min_qty_alert")).count()
-    stock_value = sum(
-        float(p.qty) * float(p.selling_price)
-        for p in products.only("qty", "selling_price")
-    )
-
-    data = {
-        "today_sales":          float(agg["today_sales"] or 0),
-        "today_invoice_count":  int(agg["today_count"] or 0),
-        "unpaid_amount":        float(agg["unpaid_amount"] or 0),
-        "paid_amount":          float(agg["paid_amount"] or 0),
-        "month_billing":        float(agg["month_billing"] or 0),
-        "month_invoice_count":  int(agg["month_count"] or 0),
-        "total_billing":        float(agg["total_billing"] or 0),
-        "invoice_count":        int(agg["invoice_count"] or 0),
-        "customer_count":       Customer.objects.filter(user=user).count(),
-        "stock_items":          stock_items,
-        "stock_value":          stock_value,
-        "low_stock_count":      low_stock_count,
-    }
-
-    return Response(DashboardStatsSerializer(data).data)
-
-# ---------------------------------------------------
 # --------------------------------
 # ---------------------
 
@@ -718,41 +653,44 @@ class CustomerOrderDetailView(APIView):
     """PATCH /api/business/orders/<id>/  — update order status"""
     permission_classes = [permissions.IsAuthenticated]
 
-    def patch(self, request, pk):
-        order = get_object_or_404(CustomerOrder, pk=pk, user=request.user)
-        new_status = request.data.get("status")
-
+    # ✅ CORRECT — rename the local variable
+def patch(self, request, pk):
+    order = get_object_or_404(CustomerOrder, pk=pk, user=request.user)
+    new_status = request.data.get("status")
+    
+    # Also handle non-status updates (payment completion)
+    amount_paid = request.data.get("amount_paid_at_pickup")
+    remaining   = request.data.get("remaining_balance")
+    payment_st  = request.data.get("payment_status")
+    
+    if new_status:
         VALID_TRANSITIONS = {
             "new":       ["packing", "cancelled"],
-            "packing":   ["ready", "cancelled"],
+            "packing":   ["ready",   "cancelled"],
             "ready":     ["completed"],
             "completed": [],
             "cancelled": [],
         }
-
         if new_status not in VALID_TRANSITIONS.get(order.status, []):
             return Response(
                 {"error": f"Cannot move from '{order.status}' to '{new_status}'"},
-                status=status.HTTP_400_BAD_REQUEST
+                status=status.HTTP_400_BAD_REQUEST   # ← now "status" is the module again
             )
-
         order.status = new_status
-        order.save(update_fields=["status", "updated_at"])
-
-        # Notify customer (via WhatsApp / SMS in real implementation)
-        if new_status == "ready":
-            ShopNotification.objects.create(
-                user       = request.user,
-                order      = order,
-                notif_type = "ready",
-                message    = f"Order {order.order_id} is ready for pickup. Balance: ₹{order.balance}",
-            )
-
-        # Auto-generate invoice when completed
-        if new_status == "completed":
-            _create_invoice_from_order(order)
-
-        return Response(CustomerOrderReadSerializer(order).data)
+    
+    if amount_paid is not None:
+        order.amount_paid_at_pickup = amount_paid
+    if remaining is not None:
+        order.remaining_balance = remaining
+    if payment_st is not None:
+        order.payment_status = payment_st
+    
+    order.save()
+    
+    if new_status == "completed":
+        _create_invoice_from_order(order)
+    
+    return Response(CustomerOrderReadSerializer(order).data)
 
 
 def _create_invoice_from_order(order):
@@ -852,44 +790,469 @@ class PublicOrdersByMobileView(APIView):
 
 # ======================================================
 
+# ✅ CORRECT — save razorpay_order_id to your CustomerOrder
 @csrf_exempt
-def create_razorpay_order(request , scanner_id=None):
-    client = razorpay.Client(
-        auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET)
-    )
+def create_razorpay_order(request, scanner_id=None):
     data = json.loads(request.body)
-    amount = int(float(data['amount']) * 100)  # convert to paise
+    amount = int(float(data['amount']) * 100)
     
-    order = client.order.create({
+    rzp_order = client.order.create({
         "amount": amount,
         "currency": "INR",
-        "payment_capture": 1
+        "payment_capture": 1,
+        "receipt": f"order_{data.get('order_id', 'unknown')}",
     })
     
+    # ✅ Save razorpay_order_id to DB
+    from .models import CustomerOrder
+    order_id = data.get('order_id')
+    if order_id:
+        CustomerOrder.objects.filter(id=order_id).update(
+            razorpay_order_id=rzp_order['id']
+        )
+    
     return JsonResponse({
-        "razorpay_order_id": order['id'],
-        "amount": order['amount'],
-        "currency": order['currency']
+        "razorpay_order_id": rzp_order['id'],
+        "amount": rzp_order['amount'],
+        "currency": rzp_order['currency'],
     })
 
 
 
-
+import hmac, hashlib
 @csrf_exempt
 def verify_payment(request, scanner_id=None):
     try:
         data = json.loads(request.body)
-        client.utility.verify_payment_signature({
-            'razorpay_order_id':   data['razorpay_order_id'],
-            'razorpay_payment_id': data['razorpay_payment_id'],
-            'razorpay_signature':  data['razorpay_signature'],
-        })
+        
+        msg = f"{data['razorpay_order_id']}|{data['razorpay_payment_id']}"
+        generated_sig = hmac.new(
+            settings.RAZORPAY_KEY_SECRET.encode(),
+            msg.encode(),
+            hashlib.sha256
+        ).hexdigest()
+        
+        if generated_sig != data['razorpay_signature']:
+            return JsonResponse({"status": "failed"}, status=400)
+        
+        # ✅ Update order in DB after verification
+        from .models import CustomerOrder
+        order_ref = data.get('order_id')
+        if order_ref:
+            CustomerOrder.objects.filter(id=order_ref).update(
+                payment_status="paid",
+                payment_id=data['razorpay_payment_id'],
+            )
+        
         return JsonResponse({"status": "verified"})
-    except razorpay.errors.SignatureVerificationError:
-        return JsonResponse({"status": "failed"}, status=400)
     except Exception as e:
         return JsonResponse({"status": "error", "detail": str(e)}, status=400)
 
 
 
 
+
+
+
+
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])   # ← no login needed, customer can open
+def public_invoice_view(request, invoice_id):
+    try:
+        invoice = Invoice.objects.get(invoice_id=invoice_id)
+        serializer = PublicInvoiceSerializer(invoice)
+        return Response(serializer.data)
+    except Invoice.DoesNotExist:
+        return Response(
+            {'error': 'Invoice not found'},
+            status=status.HTTP_404_NOT_FOUND
+        )
+    
+
+
+@api_view(["GET"])
+@permission_classes([permissions.IsAuthenticated])
+def dashboard_stats(request):
+    user = request.user
+    now  = timezone.now()
+    today_date = now.date()  # Use proper date object, not text string
+
+    invoices = Invoice.objects.filter(user=user)
+
+    agg = invoices.aggregate(
+        # ── TODAY — use created_at__date (reliable, no text comparison) ──
+        today_sales         = Sum("total",   filter=Q(created_at__date=today_date)),
+        today_count         = Count("id",    filter=Q(created_at__date=today_date)),
+        today_paid_amount   = Sum("advance", filter=Q(created_at__date=today_date, status__in=["Paid", "Partial"])),
+        today_unpaid_amount = Sum("balance", filter=Q(created_at__date=today_date, status__in=["Pending", "Partial"])),
+
+        # ── WEEK (last 7 days) ──
+        week_billing        = Sum("total",   filter=Q(created_at__gte=now - timezone.timedelta(days=7))),
+        week_count          = Count("id",    filter=Q(created_at__gte=now - timezone.timedelta(days=7))),
+        week_paid_amount    = Sum("advance", filter=Q(created_at__gte=now - timezone.timedelta(days=7), status__in=["Paid", "Partial"])),
+        week_unpaid_amount  = Sum("balance", filter=Q(created_at__gte=now - timezone.timedelta(days=7), status__in=["Pending", "Partial"])),
+
+        # ── MONTH ──
+        month_billing       = Sum("total",   filter=Q(created_at__month=now.month, created_at__year=now.year)),
+        month_count         = Count("id",    filter=Q(created_at__month=now.month, created_at__year=now.year)),
+        paid_amount         = Sum("advance", filter=Q(created_at__month=now.month, created_at__year=now.year, status__in=["Paid", "Partial"])),
+        unpaid_amount       = Sum("balance", filter=Q(created_at__month=now.month, created_at__year=now.year, status__in=["Pending", "Partial"])),
+
+        # ── ALL TIME ──
+        total_billing       = Sum("total"),
+        invoice_count       = Count("id"),
+        
+    )
+
+    recent_invoices = list(
+        invoices.order_by("-created_at")[:5].values(
+            "id",
+            "customer_name",
+            "created_at",
+            total_amount   = F("total"),
+            payment_status = F("status"),
+        )
+    )
+
+    products        = Product.objects.filter(user=user, is_active=True)
+    stock_items     = products.count()
+    low_stock_count = products.filter(qty__lte=F("min_qty_alert")).count()
+    stock_value     = sum(
+        float(p.qty) * float(p.selling_price)
+        for p in products.only("qty", "selling_price")
+    )
+
+    data = {
+        "today_sales":          float(agg["today_sales"]         or 0),
+        "today_invoice_count":  int(  agg["today_count"]         or 0),
+        "today_paid_amount":    float(agg["today_paid_amount"]   or 0),
+        "today_unpaid_amount":  float(agg["today_unpaid_amount"] or 0),
+
+        "week_billing":         float(agg["week_billing"]        or 0),
+        "week_invoice_count":   int(  agg["week_count"]          or 0),
+        "week_paid_amount":     float(agg["week_paid_amount"]    or 0),
+        "week_unpaid_amount":   float(agg["week_unpaid_amount"]  or 0),
+
+        "month_billing":        float(agg["month_billing"]       or 0),
+        "month_invoice_count":  int(  agg["month_count"]         or 0),
+        "paid_amount":          float(agg["paid_amount"]         or 0),
+        "unpaid_amount":        float(agg["unpaid_amount"]       or 0),
+
+        "total_billing":        float(agg["total_billing"]       or 0),
+        "invoice_count":        int(  agg["invoice_count"]       or 0),
+        "customer_count":       Customer.objects.filter(user=user).count(),
+        "stock_items":          stock_items,
+        "stock_value":          stock_value,
+        "low_stock_count":      low_stock_count,
+        "recent_invoices":      recent_invoices,
+
+        "total_unpaid_amount":  float(invoices.aggregate(t=Sum("balance", filter=Q(status__in=["Pending","Partial"])))["t"] or 0),
+        "total_paid_amount":    float(invoices.aggregate(t=Sum("advance", filter=Q(status__in=["Paid","Partial"])))["t"] or 0),
+        
+    }
+
+    return Response(data)
+
+
+
+
+
+
+
+
+
+
+
+
+
+def generate_invoice_id(user):
+    """
+    Makes invoice IDs like INV-2526-0001
+    2526 means financial year 2025-2026
+    0001 means first invoice of that year
+    """
+    today = date.today()
+    
+    # Financial year starts April 1
+    # If today is Jan 2026, financial year is 2025-26
+    if today.month >= 4:
+        fy_start = today.year        # e.g. 2025
+    else:
+        fy_start = today.year - 1   # e.g. 2025 (when today is Jan 2026)
+    
+    fy_end = (fy_start + 1) % 100   # gives last 2 digits: 26
+    fy_str = f"{str(fy_start)[-2:]}{fy_end:02d}"  # "2526"
+    
+    # Count how many invoices this user made this financial year
+    fy_start_date = date(fy_start, 4, 1)   # April 1st
+    count = Invoice.objects.filter(
+        user=user,
+        created_at__date__gte=fy_start_date
+    ).count()
+    
+    seq = str(count + 1).zfill(4)   # 0001, 0002, 0003...
+    
+    return f"INV-{fy_str}-{seq}"
+
+
+
+
+class NextInvoiceIdView(APIView):
+    """
+    GET /api/business/invoices/next-id/
+    Returns the next invoice ID for this user
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        invoice_id = generate_invoice_id(request.user)
+        return Response({"invoice_id": invoice_id})
+
+
+
+
+
+@api_view(["GET", "POST"])
+@permission_classes([permissions.IsAuthenticated])
+def itc_opening_balance(request):
+    year = int(request.query_params.get("year", date.today().year))
+    
+    if request.method == "GET":
+        from .models import GstITCBalance
+        try:
+            obj = GstITCBalance.objects.get(user=request.user, year=year)
+            return Response({"opening_itc": float(obj.opening_itc)})
+        except GstITCBalance.DoesNotExist:
+            return Response({"opening_itc": 0.0})
+    
+    if request.method == "POST":
+        from .models import GstITCBalance
+        amount = float(request.data.get("opening_itc", 0))
+        obj, _ = GstITCBalance.objects.update_or_create(
+            user=request.user,
+            year=year,
+            defaults={"opening_itc": amount}
+        )
+        return Response({"opening_itc": float(obj.opening_itc), "saved": True})
+
+
+
+
+
+
+
+
+
+@api_view(["GET"])
+@permission_classes([permissions.IsAuthenticated])
+def gst_invoice_export(request):
+    """
+    GET /api/business/gst-invoice-export/
+    ?year=2026&month=5&type=b2b   → invoice-level detail for CSV export
+    ?year=2026&month=all&type=b2c → all months
+    """
+    year     = int(request.query_params.get("year",  date.today().year))
+    month    = request.query_params.get("month", "all")
+    gst_type = request.query_params.get("type",  "b2b")  # b2b or b2c
+
+    qs = Invoice.objects.filter(
+        user=request.user,
+        is_gst=True,
+        created_at__year=year,
+    ).prefetch_related("items")
+
+    if month != "all":
+        qs = qs.filter(created_at__month=int(month))
+
+    if gst_type == "b2b":
+        qs = qs.exclude(customer_gst="").exclude(customer_gst__isnull=True)
+    else:
+        qs = qs.filter(Q(customer_gst="") | Q(customer_gst__isnull=True))
+
+    qs = qs.order_by("created_at")
+
+    result = []
+    for inv in qs:
+        items = inv.items.all()
+        item_names  = " | ".join([f"{it.name} x{it.qty}" for it in items])
+        item_hsns   = " | ".join([getattr(it, "hsn_code", "") or "—" for it in items])
+        gst_amt     = float(inv.gst_amt or 0)
+        subtotal    = float(inv.subtotal or 0)
+        total       = float(inv.total or 0)
+        cgst        = round(gst_amt / 2, 2)
+        sgst        = round(gst_amt / 2, 2)
+
+        result.append({
+            "invoice_id":      inv.invoice_id,
+            "date":            inv.created_at.strftime("%d/%m/%Y"),
+            "month":           inv.created_at.strftime("%B"),
+            "year":            inv.created_at.year,
+            "customer_name":   inv.customer_name or "—",
+            "customer_mobile": inv.customer_mobile or "—",
+            "customer_gst":    inv.customer_gst or "—",
+            "customer_address":getattr(inv, "customer_address", "") or "—",
+            "items":           item_names or "—",
+            "hsn_codes":       item_hsns or "—",
+            "taxable_value":   subtotal,
+            "gst_rate":        float(inv.gst_percent or 18),
+            
+            "cgst":            cgst,
+            "sgst":            sgst,
+            "igst":            0,
+            "total_gst":       gst_amt,
+            "total_amount":    total,
+            "payment_mode":    inv.payment or "—",
+            "payment_status":  inv.status or "—",
+            "advance_paid":    float(inv.advance or 0),
+            "balance_due":     float(inv.balance or 0),
+        })
+
+    return Response(result)
+
+
+
+
+# ─── Add this helper function anywhere in views.py ───────────
+
+def get_device_limit(user):
+    """
+    Returns device limit based on user's active subscription plan.
+    Reads from your existing Subscription model.
+    """
+    from .models import Subscription  # adjust import to your model name
+    
+    try:
+        sub = Subscription.objects.filter(
+            user=user,
+            is_active=True,
+        ).order_by("-created_at").first()
+        
+        if not sub:
+            return 1  # Free tier — 1 device only
+        
+        plan = (sub.plan or "").lower()
+        
+        if "smart" in plan or "pro" in plan or "299" in plan:
+            return 4  # Smart Dukan — 4 devices
+        elif "dukan" in plan or "basic" in plan or "199" in plan:
+            return 2  # Dukan Plan — 2 devices
+        else:
+            return 1  # Free tier
+    except Exception:
+        return 1  # Default safe fallback
+
+
+# ─── Add this new view for device registration ───────────────
+
+class RegisterDeviceView(APIView):
+    """
+    POST /api/auth/register-device/
+    Called during login — checks device limit before allowing.
+    Body: { device_id, device_name }
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        from .models import UserDeviceSession
+        
+        device_id   = request.data.get("device_id",   "").strip()
+        device_name = request.data.get("device_name", "Unknown Device").strip()
+
+        if not device_id:
+            return Response(
+                {"error": "device_id is required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Check if this device is already registered for this user
+        existing = UserDeviceSession.objects.filter(
+            user=request.user,
+            device_id=device_id
+        ).first()
+
+        if existing:
+            # Already registered — just update last_active
+            existing.is_active  = True
+            existing.device_name = device_name
+            existing.save()
+            return Response({
+                "allowed":      True,
+                "device_id":    device_id,
+                "device_name":  device_name,
+                "message":      "Device already registered"
+            })
+
+        # New device — check limit
+        device_limit  = get_device_limit(request.user)
+        active_devices = UserDeviceSession.objects.filter(
+            user=request.user,
+            is_active=True
+        ).count()
+
+        if active_devices >= device_limit:
+            # Fetch device list so frontend can show which devices are active
+            devices = UserDeviceSession.objects.filter(
+                user=request.user,
+                is_active=True
+            ).values("device_id", "device_name", "last_active")
+
+            return Response({
+                "allowed":       False,
+                "device_limit":  device_limit,
+                "active_count":  active_devices,
+                "active_devices": list(devices),
+                "error": f"Maximum {device_limit} devices allowed on your plan. Remove a device to continue.",
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        # Register new device
+        UserDeviceSession.objects.create(
+            user        = request.user,
+            device_id   = device_id,
+            device_name = device_name,
+            is_active   = True,
+        )
+
+        return Response({
+            "allowed":     True,
+            "device_id":   device_id,
+            "device_name": device_name,
+            "message":     "Device registered successfully"
+        })
+
+
+class DeviceListView(APIView):
+    """
+    GET    /api/auth/devices/        → list all active devices
+    DELETE /api/auth/devices/<id>/   → remove a device (logout that device)
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from .models import UserDeviceSession
+        devices = UserDeviceSession.objects.filter(
+            user=request.user,
+            is_active=True
+        ).order_by("-last_active")
+
+        data = [{
+            "device_id":   d.device_id,
+            "device_name": d.device_name,
+            "last_active": d.last_active,
+            "is_current":  d.device_id == request.data.get("current_device_id", ""),
+        } for d in devices]
+
+        return Response({
+            "devices":      data,
+            "count":        len(data),
+            "device_limit": get_device_limit(request.user),
+        })
+
+    def delete(self, request, device_id):
+        from .models import UserDeviceSession
+        UserDeviceSession.objects.filter(
+            user=request.user,
+            device_id=device_id
+        ).update(is_active=False)
+        return Response({"message": "Device removed"})
