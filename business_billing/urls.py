@@ -52,9 +52,9 @@ urlpatterns = [
     # invoices numbers generate url 
     path('invoices/next-id/', views.NextInvoiceIdView.as_view()),
 
-    path("auth/register-device/",         RegisterDeviceView.as_view()),
-    path("auth/devices/",                  DeviceListView.as_view()),
-    path("auth/devices/<str:device_id>/",  DeviceListView.as_view()),
+    path("register-device/",         RegisterDeviceView.as_view()),
+    path("devices/",                  DeviceListView.as_view()),
+    path("devices/<str:device_id>/",  DeviceListView.as_view()),
 
 
 ]   
