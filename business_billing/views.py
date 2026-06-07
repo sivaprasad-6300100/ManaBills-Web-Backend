@@ -1121,7 +1121,7 @@ def get_device_limit(user):
     Returns device limit based on user's active subscription plan.
     Reads from your existing Subscription model.
     """
-    from .models import Subscription  # adjust import to your model name
+    from subscriptions.models import Subscription  # adjust import to your model name
     
     try:
         sub = Subscription.objects.filter(
@@ -1132,7 +1132,7 @@ def get_device_limit(user):
         if not sub:
             return 1  # Free tier — 1 device only
         
-        plan = (sub.plan or "").lower()
+        plan = (sub.plan_key or "").lower()
         
         if "smart" in plan or "pro" in plan or "299" in plan:
             return 4  # Smart Dukan — 4 devices
