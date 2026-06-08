@@ -13,4 +13,7 @@ urlpatterns = [
 
     # Quick active-check: /api/subscriptions/check/?module=business
     path("check/",    views.check_subscription,    name="check-subscription"),
+
+
+    path("free-trial/", views.activate_free_trial),
 ]

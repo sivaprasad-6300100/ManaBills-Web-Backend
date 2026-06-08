@@ -67,7 +67,8 @@ class Subscription(models.Model):
         mapping = {
             "1 Year":    timedelta(days=365),
             "6 Months":  timedelta(days=182),
-            "FREE_TRIAL": timedelta(days=3),
+            "1 Month":    timedelta(days=30),
+            "FREE_TRIAL": timedelta(days=5),
         }
         # Default → 1 Month (30 days)
         return base + mapping.get(self.duration, timedelta(days=30))

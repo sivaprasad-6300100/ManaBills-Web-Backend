@@ -158,3 +158,57 @@ def check_subscription(request):
             "is_active": False,
             "days_left": 0,
         })
+    
+
+
+
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def activate_free_trial(request):
+    """
+    POST /api/subscriptions/free-trial/
+    Body: { module: "business" }
+    Gives 5-day free trial — only if user has never had one before.
+    """
+    module = request.data.get("module", "business")
+
+    # Block if already used a trial or has active subscription
+    existing = Subscription.objects.filter(
+        user=request.user,
+        module=module,
+    ).first()
+
+    if existing:
+        if existing.status == "active":
+            return Response(
+                {"error": "You already have an active plan."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if existing.plan_key == "free_trial":
+            return Response(
+                {"error": "Free trial already used. Please subscribe to continue."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+    sub, _ = Subscription.objects.update_or_create(
+        user=request.user,
+        module=module,
+        defaults={
+            "plan_key":   "free_trial",
+            "duration":   "FREE_TRIAL",   # → 5 days
+            "status":     "active",
+            "payment_id": "",
+            "amount_paid": 0,
+            "started_at": timezone.now(),
+            "expires_at": None,           # _calc_expiry() fills this
+        },
+    )
+    sub.expires_at = sub._calc_expiry()
+    sub.save(update_fields=["expires_at"])
+
+    return Response(
+        SubscriptionSerializer(sub).data,
+        status=status.HTTP_201_CREATED,
+    )
