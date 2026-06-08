@@ -1,6 +1,6 @@
 from django.urls import path
 from . import views
-from .views import PublicShopView, PlaceOrderView, PublicOrdersByMobileView  ,RegisterDeviceView, DeviceListView
+from .views import PublicShopView, PlaceOrderView, PublicOrdersByMobileView  
 
 
 
@@ -52,9 +52,9 @@ urlpatterns = [
     # invoices numbers generate url 
     path('invoices/next-id/', views.NextInvoiceIdView.as_view()),
 
-    path("register-device/",         RegisterDeviceView.as_view()),
-    path("devices/",                  DeviceListView.as_view()),
-    path("devices/<str:device_id>/",  DeviceListView.as_view()),
+    # path("register-device/",         RegisterDeviceView.as_view()),
+    # path("devices/",                  DeviceListView.as_view()),
+    # path("devices/<str:device_id>/",  DeviceListView.as_view()),
 
 
 ]   
