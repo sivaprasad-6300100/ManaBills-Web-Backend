@@ -56,5 +56,7 @@ urlpatterns = [
     # path("devices/",                  DeviceListView.as_view()),
     # path("devices/<str:device_id>/",  DeviceListView.as_view()),
 
+    path("chart-stats/", views.chart_stats, name="chart-stats"),
+
 
 ]   

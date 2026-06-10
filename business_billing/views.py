@@ -1256,3 +1256,97 @@ class DeviceListView(APIView):
             device_id=device_id
         ).update(is_active=False)
         return Response({"message": "Device removed"})
+    
+
+
+
+
+
+
+
+@api_view(["GET"])
+@permission_classes([permissions.IsAuthenticated])
+def chart_stats(request):
+    """
+    Returns bar chart data broken down by:
+      period=day   → Mon–Sun of the current week (7 points)
+      period=week  → Week 1–4 of the current month (4 points)
+      period=month → Jan–Dec of the current year (12 points)
+ 
+    Each point returns:
+      { total_sales, collected, pending, invoice_count }
+    """
+    from django.db.models.functions import ExtractWeekDay, ExtractWeek, ExtractMonth
+    from django.utils import timezone
+ 
+    period   = request.query_params.get("period", "month")
+    user     = request.user
+    now      = timezone.now()
+    invoices = Invoice.objects.filter(user=user)
+ 
+    def _agg(qs):
+        
+        r = qs.aggregate(
+            total_sales   = Sum("total"),
+            collected     = Sum("advance",  filter=Q(status__in=["Paid", "Partial"])),
+            pending       = Sum("balance",  filter=Q(status__in=["Pending", "Partial"])),
+            invoice_count = Count("id"),
+        )
+        return {
+            "total_sales":   float(r["total_sales"]   or 0),
+            "collected":     float(r["collected"]      or 0),
+            "pending":       float(r["pending"]        or 0),
+            "invoice_count": int(  r["invoice_count"]  or 0),
+        }
+ 
+    if period == "day":
+        # Current week: Monday=1 … Sunday=7  (ISO)
+        # Get start of this week (Monday)
+        from datetime import timedelta
+        week_start = now.date() - timedelta(days=now.weekday())   # Monday
+        result = []
+        for day_offset in range(7):
+            day = week_start + timedelta(days=day_offset)
+            result.append(_agg(invoices.filter(created_at__date=day)))
+        return Response(result)
+ 
+    elif period == "week":
+        # 4 weeks of the current month
+        import calendar
+        year, month = now.year, now.month
+        _, last_day = calendar.monthrange(year, month)
+ 
+        from datetime import date, timedelta
+        week_ranges = []
+        start = date(year, month, 1)
+        for w in range(4):
+            end = min(start + timedelta(days=6), date(year, month, last_day))
+            week_ranges.append((start, end))
+            start = end + timedelta(days=1)
+            if start.month != month:
+                break
+ 
+        # Pad to 4 slots
+        while len(week_ranges) < 4:
+            week_ranges.append(None)
+ 
+        result = []
+        for wr in week_ranges:
+            if wr is None:
+                result.append({"total_sales": 0, "collected": 0, "pending": 0, "invoice_count": 0})
+            else:
+                result.append(_agg(invoices.filter(
+                    created_at__date__gte=wr[0],
+                    created_at__date__lte=wr[1],
+                )))
+        return Response(result)
+ 
+    else:  # month (default)
+        year = now.year
+        result = []
+        for m in range(1, 13):
+            result.append(_agg(invoices.filter(
+                created_at__year=year,
+                created_at__month=m,
+            )))
+        return Response(result)
