@@ -1254,7 +1254,6 @@ class DeviceListView(APIView):
 
 
 
-
 @api_view(["GET"])
 @permission_classes([permissions.IsAuthenticated])
 def chart_stats(request):
@@ -1262,14 +1261,12 @@ def chart_stats(request):
     import calendar
     from datetime import date, timedelta
 
-    period        = request.query_params.get("period", "month")
-    user          = request.user
-    now           = timezone.now()
-    invoices      = Invoice.objects.filter(user=user)
-
-    # Optional params for cascading
-    month_param       = request.query_params.get("month")        # 1–12
-    week_of_month_param = request.query_params.get("week_of_month")  # 1–4
+    period              = request.query_params.get("period", "month")
+    user                = request.user
+    now                 = timezone.now()
+    invoices            = Invoice.objects.filter(user=user)
+    month_param         = request.query_params.get("month")
+    week_of_month_param = request.query_params.get("week_of_month")
 
     def _agg(qs):
         r = qs.aggregate(
@@ -1285,51 +1282,77 @@ def chart_stats(request):
             "invoice_count": int(  r["invoice_count"] or 0),
         }
 
-    if period == "day":
-        # If week_of_month given → use that week's Monday as week_start
-        # Otherwise use current week
-        if week_of_month_param and month_param:
-            month      = int(month_param)
-            week_num   = int(week_of_month_param)  # 1–4
-            year       = now.year
-            _, last_day = calendar.monthrange(year, month)
-            start = date(year, month, 1)
-            for w in range(4):
-                end = min(start + timedelta(days=6), date(year, month, last_day))
-                if w + 1 == week_num:
-                    week_start = start
-                    break
-                start = end + timedelta(days=1)
-                if start.month != month:
-                    week_start = now.date() - timedelta(days=now.weekday())
-                    break
-            else:
-                week_start = now.date() - timedelta(days=now.weekday())
-        else:
-            week_start = now.date() - timedelta(days=now.weekday())
-
-        result = []
-        for day_offset in range(7):
-            day = week_start + timedelta(days=day_offset)
-            result.append(_agg(invoices.filter(created_at__date=day)))
-        return Response(result)
-
-    elif period == "week":
-        # If month_param given → use that month, else current month
-        year  = now.year
-        month = int(month_param) if month_param else now.month
+    def build_week_ranges(year, month):
+        """
+        Calendar-accurate week ranges.
+        Week 1 starts on day 1 (whatever weekday that is) and ends on Sunday.
+        Week 4 absorbs ALL remaining days (29, 30, 31).
+        Always returns exactly 4 items — None if that week doesn't exist.
+        """
         _, last_day = calendar.monthrange(year, month)
-
         week_ranges = []
         start = date(year, month, 1)
-        for w in range(4):
-            end = min(start + timedelta(days=6), date(year, month, last_day))
+
+        while start.month == month and len(week_ranges) < 4:
+            if len(week_ranges) == 3:
+                # Week 4 absorbs all remaining days
+                end = date(year, month, last_day)
+            else:
+                # End on Sunday (weekday 6) or end of month
+                days_to_sunday = 6 - start.weekday()
+                end = min(
+                    start + timedelta(days=days_to_sunday),
+                    date(year, month, last_day)
+                )
             week_ranges.append((start, end))
             start = end + timedelta(days=1)
-            if start.month != month:
-                break
+
+        # Pad to 4 slots
         while len(week_ranges) < 4:
             week_ranges.append(None)
+
+        return week_ranges
+
+    # ── period == "day" ──────────────────────────────────────────
+    if period == "day":
+        if week_of_month_param and month_param:
+            month    = int(month_param)
+            week_num = int(week_of_month_param)  # 1–4
+            year     = now.year
+
+            week_ranges = build_week_ranges(year, month)
+            wr = week_ranges[week_num - 1]
+
+            if wr is None:
+                return Response(
+                    [{"total_sales": 0, "collected": 0, "pending": 0, "invoice_count": 0}] * 7
+                )
+
+            week_start, week_end = wr
+        else:
+            # No params — use current calendar week (Mon to Sun)
+            week_start = now.date() - timedelta(days=now.weekday())
+            week_end   = week_start + timedelta(days=6)
+
+        # Iterate only actual days in this week range
+        result  = []
+        current = week_start
+        while current <= week_end:
+            result.append(_agg(invoices.filter(created_at__date=current)))
+            current += timedelta(days=1)
+
+        # Always pad to 7 slots so frontend array[0..6] never breaks
+        while len(result) < 7:
+            result.append({"total_sales": 0, "collected": 0, "pending": 0, "invoice_count": 0})
+
+        return Response(result)
+
+    # ── period == "week" ─────────────────────────────────────────
+    elif period == "week":
+        year  = now.year
+        month = int(month_param) if month_param else now.month
+
+        week_ranges = build_week_ranges(year, month)
 
         result = []
         for wr in week_ranges:
@@ -1342,8 +1365,9 @@ def chart_stats(request):
                 )))
         return Response(result)
 
-    else:  # month
-        year = now.year
+    # ── period == "month" ────────────────────────────────────────
+    else:
+        year   = now.year
         result = []
         for m in range(1, 13):
             result.append(_agg(invoices.filter(
@@ -1351,3 +1375,84 @@ def chart_stats(request):
                 created_at__month=m,
             )))
         return Response(result)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
