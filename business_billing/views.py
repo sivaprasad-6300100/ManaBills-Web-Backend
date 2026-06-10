@@ -14,6 +14,14 @@ from .serializers import PublicInvoiceSerializer
 from rest_framework.permissions import AllowAny
 from .models import Invoice
 import json
+from django.shortcuts import get_object_or_404
+from django.db import transaction as db_transaction
+from .models import ShopScanner, CustomerOrder, CustomerOrderItem, ShopNotification
+from .serializers import (
+    ShopScannerSerializer, PublicShopSerializer,
+    PublicProductSerializer, CustomerOrderWriteSerializer,
+    CustomerOrderReadSerializer, ShopNotificationSerializer,
+)
 from django.views.decorators.csrf import csrf_exempt
 client = razorpay.Client(auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET))
 
@@ -518,22 +526,6 @@ def mark_gst_paid(request):
 
 # --------------------------------
 # ---------------------
-
-"""
-Add these views to business_billing/views.py
-"""
-# from rest_framework import generics, status, permissions
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework.response import Response
-from rest_framework.views import APIView
-from django.shortcuts import get_object_or_404
-from django.db import transaction as db_transaction
-from .models import ShopScanner, ShopProfile, Product, CustomerOrder, CustomerOrderItem, ShopNotification
-from .serializers import (
-    ShopScannerSerializer, PublicShopSerializer,
-    PublicProductSerializer, CustomerOrderWriteSerializer,
-    CustomerOrderReadSerializer, ShopNotificationSerializer,
-)
 
 
 # ─── 1. Auto-create scanner when shop profile is saved ───────────
@@ -1263,60 +1255,71 @@ class DeviceListView(APIView):
 
 
 
-
 @api_view(["GET"])
 @permission_classes([permissions.IsAuthenticated])
 def chart_stats(request):
-    """
-    Returns bar chart data broken down by:
-      period=day   → Mon–Sun of the current week (7 points)
-      period=week  → Week 1–4 of the current month (4 points)
-      period=month → Jan–Dec of the current year (12 points)
- 
-    Each point returns:
-      { total_sales, collected, pending, invoice_count }
-    """
-    from django.db.models.functions import ExtractWeekDay, ExtractWeek, ExtractMonth
     from django.utils import timezone
- 
-    period   = request.query_params.get("period", "month")
-    user     = request.user
-    now      = timezone.now()
-    invoices = Invoice.objects.filter(user=user)
- 
+    import calendar
+    from datetime import date, timedelta
+
+    period        = request.query_params.get("period", "month")
+    user          = request.user
+    now           = timezone.now()
+    invoices      = Invoice.objects.filter(user=user)
+
+    # Optional params for cascading
+    month_param       = request.query_params.get("month")        # 1–12
+    week_of_month_param = request.query_params.get("week_of_month")  # 1–4
+
     def _agg(qs):
-        
         r = qs.aggregate(
             total_sales   = Sum("total"),
-            collected     = Sum("advance",  filter=Q(status__in=["Paid", "Partial"])),
-            pending       = Sum("balance",  filter=Q(status__in=["Pending", "Partial"])),
+            collected     = Sum("advance", filter=Q(status__in=["Paid", "Partial"])),
+            pending       = Sum("balance", filter=Q(status__in=["Pending", "Partial"])),
             invoice_count = Count("id"),
         )
         return {
             "total_sales":   float(r["total_sales"]   or 0),
-            "collected":     float(r["collected"]      or 0),
-            "pending":       float(r["pending"]        or 0),
-            "invoice_count": int(  r["invoice_count"]  or 0),
+            "collected":     float(r["collected"]     or 0),
+            "pending":       float(r["pending"]       or 0),
+            "invoice_count": int(  r["invoice_count"] or 0),
         }
- 
+
     if period == "day":
-        # Current week: Monday=1 … Sunday=7  (ISO)
-        # Get start of this week (Monday)
-        from datetime import timedelta
-        week_start = now.date() - timedelta(days=now.weekday())   # Monday
+        # If week_of_month given → use that week's Monday as week_start
+        # Otherwise use current week
+        if week_of_month_param and month_param:
+            month      = int(month_param)
+            week_num   = int(week_of_month_param)  # 1–4
+            year       = now.year
+            _, last_day = calendar.monthrange(year, month)
+            start = date(year, month, 1)
+            for w in range(4):
+                end = min(start + timedelta(days=6), date(year, month, last_day))
+                if w + 1 == week_num:
+                    week_start = start
+                    break
+                start = end + timedelta(days=1)
+                if start.month != month:
+                    week_start = now.date() - timedelta(days=now.weekday())
+                    break
+            else:
+                week_start = now.date() - timedelta(days=now.weekday())
+        else:
+            week_start = now.date() - timedelta(days=now.weekday())
+
         result = []
         for day_offset in range(7):
             day = week_start + timedelta(days=day_offset)
             result.append(_agg(invoices.filter(created_at__date=day)))
         return Response(result)
- 
+
     elif period == "week":
-        # 4 weeks of the current month
-        import calendar
-        year, month = now.year, now.month
+        # If month_param given → use that month, else current month
+        year  = now.year
+        month = int(month_param) if month_param else now.month
         _, last_day = calendar.monthrange(year, month)
- 
-        from datetime import date, timedelta
+
         week_ranges = []
         start = date(year, month, 1)
         for w in range(4):
@@ -1325,11 +1328,9 @@ def chart_stats(request):
             start = end + timedelta(days=1)
             if start.month != month:
                 break
- 
-        # Pad to 4 slots
         while len(week_ranges) < 4:
             week_ranges.append(None)
- 
+
         result = []
         for wr in week_ranges:
             if wr is None:
@@ -1340,8 +1341,8 @@ def chart_stats(request):
                     created_at__date__lte=wr[1],
                 )))
         return Response(result)
- 
-    else:  # month (default)
+
+    else:  # month
         year = now.year
         result = []
         for m in range(1, 13):
