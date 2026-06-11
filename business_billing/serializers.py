@@ -467,7 +467,7 @@ class InvoiceItemSerializer(serializers.ModelSerializer):
         model = InvoiceItem
         fields = [
             'id', 'name', 'qty', 'price', 'unit',
-            'product', 'is_stock_item',
+            'product', 'is_stock_item','gst_rate',
         ]
 
 class PublicInvoiceSerializer(serializers.ModelSerializer):
@@ -503,6 +503,7 @@ class PublicInvoiceSerializer(serializers.ModelSerializer):
             'payment',
             'status',
             'items',
+            # 'gst_rate', 
         ]
 
 
