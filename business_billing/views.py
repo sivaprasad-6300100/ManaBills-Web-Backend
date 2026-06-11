@@ -1354,7 +1354,7 @@ def chart_stats(request):
 
         week_ranges = build_week_ranges(year, month)
 
-        result = []
+        result = [] 
         for wr in week_ranges:
             if wr is None:
                 result.append({"total_sales": 0, "collected": 0, "pending": 0, "invoice_count": 0})
