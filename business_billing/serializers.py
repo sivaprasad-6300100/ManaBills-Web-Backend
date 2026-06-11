@@ -478,7 +478,7 @@ class PublicInvoiceSerializer(serializers.ModelSerializer):
     """
     items = InvoiceItemSerializer(
         many=True,
-        source='invoice_items',   # ← use your actual related_name
+        # source='invoice_items',   # ← use your actual related_name
         read_only=True
     )
 
