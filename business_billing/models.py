@@ -278,6 +278,8 @@ class Invoice(models.Model):
     shop_name    = models.CharField(max_length=255, blank=True, default="")
     shop_address = models.TextField(blank=True, default="")
     shop_gst     = models.CharField(max_length=15, blank=True, default="")
+    shop_owner   = models.CharField(max_length=255, blank=True, default="")   # ← ADD
+    shop_mobile  = models.CharField(max_length=15, blank=True, default="") 
 
     # ── Amounts ───────────────────────────────────────────────
     subtotal  = models.DecimalField(max_digits=12, decimal_places=2, default=0)

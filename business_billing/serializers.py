@@ -170,7 +170,7 @@ class InvoiceWriteSerializer(serializers.ModelSerializer):
             "invoice_id",
             "customer",
             "customer_name", "customer_mobile", "customer_gst",
-            "shop_name", "shop_address", "shop_gst",
+            "shop_name", "shop_address", "shop_gst","shop_owner", "shop_mobile",
             "subtotal", "gst_amt", "discount", "advance",
             "total",
             "is_gst", "payment",
@@ -210,15 +210,30 @@ class InvoiceWriteSerializer(serializers.ModelSerializer):
         return data
 
     # ── Create ────────────────────────────────────────────────
+
     @db_transaction.atomic
     def create(self, validated_data):
         items_data = validated_data.pop("items")
         user       = self.context["request"].user
-
+    
+        try:
+            p = ShopProfile.objects.get(user=user)
+            validated_data.setdefault("shop_name",    p.shop_name  or "")
+            validated_data.setdefault("shop_owner",   p.owner_name or "")
+            validated_data.setdefault("shop_mobile",  p.mobile     or "")
+            validated_data.setdefault("shop_address", p.address    or "")
+            validated_data.setdefault("shop_gst",     p.gst_number or "")
+        except ShopProfile.DoesNotExist:
+            pass
+        
         invoice = Invoice.objects.create(user=user, **validated_data)
-
         self._save_items_and_deduct_stock(invoice, items_data, user)
         return invoice
+
+
+
+
+
 
     # ── Update ────────────────────────────────────────────────
     @db_transaction.atomic
@@ -490,9 +505,8 @@ class PublicInvoiceSerializer(serializers.ModelSerializer):
             'customer_name',
             'customer_mobile',
             'customer_gst',
-            'shop_name',
-            'shop_address',
-            'shop_gst',
+            'shop_name', 'shop_address', 'shop_gst',
+            'shop_owner', 'shop_mobile',     
             'is_gst',
             'subtotal',
             'gst_amt',
