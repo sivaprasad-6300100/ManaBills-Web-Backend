@@ -629,28 +629,22 @@ class PlaceOrderView(APIView):
 
 # ─── 5. OWNER — List & manage customer orders ────────────────────
 class CustomerOrderListView(generics.ListAPIView):
-    """GET /api/business/orders/  — owner sees all customer orders"""
     serializer_class   = CustomerOrderReadSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        qs     = CustomerOrder.objects.filter(user=self.request.user).prefetch_related("items")
-        status = self.request.query_params.get("status")
-        if status:
-            qs = qs.filter(status=status)
+        qs          = CustomerOrder.objects.filter(user=self.request.user).prefetch_related("items")
+        status_filter = self.request.query_params.get("status")  # ← renamed
+        if status_filter:
+            qs = qs.filter(status=status_filter)
         return qs
 
-
 class CustomerOrderDetailView(APIView):
-    """PATCH /api/business/orders/<id>/  — update order status"""
     permission_classes = [permissions.IsAuthenticated]
 
-    # ✅ CORRECT — rename the local variable
     def patch(self, request, pk):
         order = get_object_or_404(CustomerOrder, pk=pk, user=request.user)
-        new_status = request.data.get("status")
-
-        # Also handle non-status updates (payment completion)
+        new_status  = request.data.get("status")
         amount_paid = request.data.get("amount_paid_at_pickup")
         remaining   = request.data.get("remaining_balance")
         payment_st  = request.data.get("payment_status")
@@ -666,9 +660,9 @@ class CustomerOrderDetailView(APIView):
             if new_status not in VALID_TRANSITIONS.get(order.status, []):
                 return Response(
                     {"error": f"Cannot move from '{order.status}' to '{new_status}'"},
-                    status=status.HTTP_400_BAD_REQUEST   # ← now "status" is the module again
+                    status=200,   # ← use integer, avoids the "status" name conflict
                 )
-            order.status = new_status
+            order.status = new_status   # ← assign AFTER validation passes
 
         if amount_paid is not None:
             order.amount_paid_at_pickup = amount_paid
