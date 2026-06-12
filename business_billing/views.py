@@ -5,7 +5,7 @@ from rest_framework.views import APIView
 from django.db.models import Sum, Count, Q, F
 from django.utils import timezone
 from datetime import date
-from rest_framework import status
+# from rest_framework import status
 from decimal import Decimal
 import razorpay
 from django.conf import settings
