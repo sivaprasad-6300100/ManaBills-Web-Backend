@@ -646,43 +646,43 @@ class CustomerOrderDetailView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     # ✅ CORRECT — rename the local variable
-def patch(self, request, pk):
-    order = get_object_or_404(CustomerOrder, pk=pk, user=request.user)
-    new_status = request.data.get("status")
-    
-    # Also handle non-status updates (payment completion)
-    amount_paid = request.data.get("amount_paid_at_pickup")
-    remaining   = request.data.get("remaining_balance")
-    payment_st  = request.data.get("payment_status")
-    
-    if new_status:
-        VALID_TRANSITIONS = {
-            "new":       ["packing", "cancelled"],
-            "packing":   ["ready",   "cancelled"],
-            "ready":     ["completed"],
-            "completed": [],
-            "cancelled": [],
-        }
-        if new_status not in VALID_TRANSITIONS.get(order.status, []):
-            return Response(
-                {"error": f"Cannot move from '{order.status}' to '{new_status}'"},
-                status=status.HTTP_400_BAD_REQUEST   # ← now "status" is the module again
-            )
-        order.status = new_status
-    
-    if amount_paid is not None:
-        order.amount_paid_at_pickup = amount_paid
-    if remaining is not None:
-        order.remaining_balance = remaining
-    if payment_st is not None:
-        order.payment_status = payment_st
-    
-    order.save()
-    
-    if new_status == "completed":
-        _create_invoice_from_order(order)
-    
-    return Response(CustomerOrderReadSerializer(order).data)
+    def patch(self, request, pk):
+        order = get_object_or_404(CustomerOrder, pk=pk, user=request.user)
+        new_status = request.data.get("status")
+
+        # Also handle non-status updates (payment completion)
+        amount_paid = request.data.get("amount_paid_at_pickup")
+        remaining   = request.data.get("remaining_balance")
+        payment_st  = request.data.get("payment_status")
+
+        if new_status:
+            VALID_TRANSITIONS = {
+                "new":       ["packing", "cancelled"],
+                "packing":   ["ready",   "cancelled"],
+                "ready":     ["completed"],
+                "completed": [],
+                "cancelled": [],
+            }
+            if new_status not in VALID_TRANSITIONS.get(order.status, []):
+                return Response(
+                    {"error": f"Cannot move from '{order.status}' to '{new_status}'"},
+                    status=status.HTTP_400_BAD_REQUEST   # ← now "status" is the module again
+                )
+            order.status = new_status
+
+        if amount_paid is not None:
+            order.amount_paid_at_pickup = amount_paid
+        if remaining is not None:
+            order.remaining_balance = remaining
+        if payment_st is not None:
+            order.payment_status = payment_st
+
+        order.save()
+
+        if new_status == "completed":
+            _create_invoice_from_order(order)
+
+        return Response(CustomerOrderReadSerializer(order).data)
 
 
 def _create_invoice_from_order(order):
