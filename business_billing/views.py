@@ -633,7 +633,7 @@ class CustomerOrderListView(generics.ListAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        qs          = CustomerOrder.objects.filter(user=self.request.user).prefetch_related("items")
+        qs            = CustomerOrder.objects.filter(user=self.request.user).prefetch_related("items")
         status_filter = self.request.query_params.get("status")  # ← renamed
         if status_filter:
             qs = qs.filter(status=status_filter)
@@ -660,9 +660,9 @@ class CustomerOrderDetailView(APIView):
             if new_status not in VALID_TRANSITIONS.get(order.status, []):
                 return Response(
                     {"error": f"Cannot move from '{order.status}' to '{new_status}'"},
-                    status=200,   # ← use integer, avoids the "status" name conflict
+                    status=400,   # ← integer, not status.HTTP_400_BAD_REQUEST
                 )
-            order.status = new_status   # ← assign AFTER validation passes
+            order.status = new_status  # ← AFTER the check
 
         if amount_paid is not None:
             order.amount_paid_at_pickup = amount_paid
