@@ -1092,7 +1092,7 @@ def gst_invoice_export(request):
             "items":           item_names or "—",
             "hsn_codes":       item_hsns or "—",
             "taxable_value":   subtotal,
-            "gst_rate":        float(inv.gst_percent or 18),
+            # "gst_rate":        float(inv.gst_percent or 18),
             
             "cgst":            cgst,
             "sgst":            sgst,
