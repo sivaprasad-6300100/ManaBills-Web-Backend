@@ -2,6 +2,7 @@ from pathlib import Path
 import os
 from datetime import timedelta
 import dj_database_url
+import sentry_sdk
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -167,3 +168,23 @@ CSRF_TRUSTED_ORIGINS = [
 ]
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+
+
+# error finding
+
+import sentry_sdk
+
+sentry_sdk.init(
+    dsn="YOUR_SENTRY_DSN_HERE",  # free from sentry.io
+    traces_sample_rate=1.0,
+    profiles_sample_rate=1.0,
+)
+
+
+sentry_sdk.init(
+    dsn="https://874d119612292ec7254ab9aa22dd9ec1@o4511576070225920.ingest.us.sentry.io/4511576079925248",
+    # Add data like request headers and IP for users,
+    # see https://docs.sentry.io/platforms/python/data-management/data-collected/ for more info
+    send_default_pii=True,
+)
