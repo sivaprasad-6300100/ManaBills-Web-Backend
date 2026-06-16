@@ -625,12 +625,6 @@ class PlaceOrderView(APIView):
                 {"detail": "Order validation failed", "errors": serializer.errors},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        if not serializer.is_valid():
-            print("SERIALIZER ERRORS:", serializer.errors)  # check your server logs
-            return Response(
-                {"detail": "Order validation failed", "errors": serializer.errors},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
  
         order = serializer.save()
  
@@ -882,7 +876,7 @@ def verify_payment(request, scanner_id=None):
  
     # Signature verification
     msg = f"{data['razorpay_order_id']}|{data['razorpay_payment_id']}"
-    generated_sig = hmac.new(
+    generated_sig = hmac.new(   
         settings.RAZORPAY_KEY_SECRET.encode("utf-8"),
         msg.encode("utf-8"),
         hashlib.sha256,

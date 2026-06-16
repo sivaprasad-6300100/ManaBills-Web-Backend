@@ -488,6 +488,12 @@ class CustomerOrder(models.Model):
     subtotal  = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     advance   = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     balance   = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    payment_method    = models.CharField(max_length=50, blank=True, default="razorpay")
+    payment_id        = models.CharField(max_length=100, blank=True, default="")
+    razorpay_order_id = models.CharField(max_length=100, blank=True, default="")
+    payment_status    = models.CharField(max_length=20, blank=True, default="pending")
+    amount_paid_at_pickup = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    remaining_balance     = models.DecimalField(max_digits=12, decimal_places=2, default=0)
 
     # Status
     status    = models.CharField(max_length=15, choices=STATUS_CHOICES, default="new")
@@ -506,14 +512,16 @@ class CustomerOrder(models.Model):
 
     def __str__(self):
         return f"{self.order_id} — {self.customer_name} — {self.status}"
+    
 
     def save(self, *args, **kwargs):
         self.balance = self.subtotal - self.advance
         if not self.order_id:
+            import uuid
             from datetime import date
             today = date.today()
-            count = CustomerOrder.objects.filter(user=self.user, created_at__date=today).count()
-            self.order_id = f"ORD-{today.strftime('%y%m%d')}-{str(count + 1).zfill(3)}"
+            unique = uuid.uuid4().hex[:6].upper()
+            self.order_id = f"ORD-{today.strftime('%y%m%d')}-{unique}"
         super().save(*args, **kwargs)
 
 

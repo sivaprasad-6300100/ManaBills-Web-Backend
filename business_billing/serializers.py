@@ -424,24 +424,25 @@ class CustomerOrderWriteSerializer(serializers.Serializer):
             raise serializers.ValidationError({"stock": errors})
  
         return data
- 
+    
+
+
     def create(self, validated_data):
         scanner        = self.context["scanner"]
         items          = validated_data.pop("items")
         advance        = validated_data["advance"]
         payment_method = validated_data.get("payment_method", "razorpay")
- 
-        # Calculate subtotal
+    
         subtotal    = Decimal("0")
         product_map = {}
         for item in items:
             product = Product.objects.get(id=item["product_id"])
             product_map[item["product_id"]] = product
             subtotal += product.selling_price * item["qty"]
- 
+    
         if advance > subtotal:
-            advance = subtotal   # cap advance at total — don't raise error
- 
+            advance = subtotal
+    
         order = CustomerOrder.objects.create(
             user            = scanner.user,
             scanner         = scanner,
@@ -451,12 +452,9 @@ class CustomerOrderWriteSerializer(serializers.Serializer):
             advance         = advance,
             balance         = subtotal - advance,
             status          = "new",
-            # Save payment_method if your model has this field.
-            # If not, remove the line below and run: python manage.py makemigrations
-            **( {"payment_method": payment_method}
-                if hasattr(CustomerOrder, "payment_method") else {} ),
+            payment_method  = payment_method,   # ← direct now, no hasattr needed
         )
- 
+    
         for item in items:
             product = product_map[item["product_id"]]
             CustomerOrderItem.objects.create(
@@ -467,8 +465,11 @@ class CustomerOrderWriteSerializer(serializers.Serializer):
                 price   = product.selling_price,
                 unit    = product.unit,
             )
- 
+    
         return order
+ 
+ 
+
  
 
 
