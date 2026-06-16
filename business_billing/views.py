@@ -601,21 +601,31 @@ class PlaceOrderView(APIView):
     """
     POST /api/public/shop/<scanner_id>/order/
     No authentication required.
-    Body: { customer_name, customer_mobile, items: [{product_id, qty}], advance }
+    Body: { customer_name, customer_mobile, items: [{product_id, qty}], advance, payment_method }
     """
     permission_classes = [permissions.AllowAny]
-
+ 
     @db_transaction.atomic
     def post(self, request, scanner_id):
+        from .models import ShopScanner, ShopNotification
+        from .serializers import CustomerOrderWriteSerializer, CustomerOrderReadSerializer
+ 
         scanner = get_object_or_404(ShopScanner, scanner_id=scanner_id, is_active=True)
-
+ 
         serializer = CustomerOrderWriteSerializer(
             data=request.data,
             context={"scanner": scanner}
         )
-        serializer.is_valid(raise_exception=True)
+ 
+        if not serializer.is_valid():
+            # Return the actual validation errors so you can debug on the frontend
+            return Response(
+                {"detail": "Order validation failed", "errors": serializer.errors},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+ 
         order = serializer.save()
-
+ 
         # Notify shop owner
         ShopNotification.objects.create(
             user       = scanner.user,
@@ -623,8 +633,9 @@ class PlaceOrderView(APIView):
             notif_type = "new_order",
             message    = f"New order {order.order_id} from {order.customer_name} — ₹{order.subtotal}",
         )
-
+ 
         return Response(CustomerOrderReadSerializer(order).data, status=status.HTTP_201_CREATED)
+
 
 
 # ─── 5. OWNER — List & manage customer orders ────────────────────
@@ -777,69 +788,121 @@ class PublicOrdersByMobileView(APIView):
 # ======================================================
 
 # ✅ CORRECT — save razorpay_order_id to your CustomerOrder
+
 @csrf_exempt
 def create_razorpay_order(request, scanner_id=None):
-    data = json.loads(request.body)
-    amount = int(float(data['amount']) * 100)
-    
-    rzp_order = client.order.create({
-        "amount": amount,
-        "currency": "INR",
-        "payment_capture": 1,
-        "receipt": f"order_{data.get('order_id', 'unknown')}",
-    })
-    
-    # ✅ Save razorpay_order_id to DB
-    from .models import CustomerOrder
-    order_id = data.get('order_id')
-    if order_id:
-        CustomerOrder.objects.filter(id=order_id).update(
-            razorpay_order_id=rzp_order['id']
-        )
-    
-    return JsonResponse({
-        "razorpay_order_id": rzp_order['id'],
-        "amount": rzp_order['amount'],
-        "currency": rzp_order['currency'],
-    })
-
-
-
-import hmac, hashlib
-@csrf_exempt
-def verify_payment(request, scanner_id=None):
+    """
+    POST /api/public/shop/<scanner_id>/create-razorpay-order/
+    Body: { order_id: "ORD-XXXX", amount: 25.00 }
+    Returns: { razorpay_order_id, amount, currency }
+    """
+    if request.method != "POST":
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+ 
     try:
         data = json.loads(request.body)
-        
-        msg = f"{data['razorpay_order_id']}|{data['razorpay_payment_id']}"
-        generated_sig = hmac.new(
-            settings.RAZORPAY_KEY_SECRET.encode(),
-            msg.encode(),
-            hashlib.sha256
-        ).hexdigest()
-        
-        if generated_sig != data['razorpay_signature']:
-            return JsonResponse({"status": "failed"}, status=400)
-        
-        # ✅ Update order in DB after verification
-        from .models import CustomerOrder
-        order_ref = data.get('order_id')
-        if order_ref:
-            CustomerOrder.objects.filter(id=order_ref).update(
-                payment_status="paid",
-                payment_id=data['razorpay_payment_id'],
-            )
-        
-        return JsonResponse({"status": "verified"})
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Invalid JSON body"}, status=400)
+ 
+    raw_amount = data.get("amount", 0)
+    try:
+        amount_paise = int(float(raw_amount) * 100)
+    except (TypeError, ValueError):
+        return JsonResponse({"error": "Invalid amount"}, status=400)
+ 
+    if amount_paise <= 0:
+        return JsonResponse({"error": "Amount must be greater than 0"}, status=400)
+ 
+    order_ref = str(data.get("order_id", "unknown"))
+ 
+    try:
+        client = razorpay.Client(auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET))
+        rzp_order = client.order.create({
+            "amount": amount_paise,
+            "currency": "INR",
+            "payment_capture": 1,
+            "receipt": f"rcpt_{order_ref[:30]}",   # receipt max 40 chars
+        })
     except Exception as e:
-        return JsonResponse({"status": "error", "detail": str(e)}, status=400)
+        return JsonResponse({"error": f"Razorpay error: {str(e)}"}, status=502)
+ 
+    # Save razorpay_order_id to CustomerOrder — try both id (int) and order_id (string)
+    if order_ref and order_ref != "unknown":
+        from .models import CustomerOrder
+        updated = 0
+        try:
+            updated = CustomerOrder.objects.filter(id=int(order_ref)).update(
+                razorpay_order_id=rzp_order["id"]
+            )
+        except (ValueError, TypeError):
+            pass
+        if not updated:
+            CustomerOrder.objects.filter(order_id=order_ref).update(
+                razorpay_order_id=rzp_order["id"]
+            )
+ 
+    return JsonResponse({
+        "razorpay_order_id": rzp_order["id"],
+        "amount": rzp_order["amount"],
+        "currency": rzp_order["currency"],
+    })
+ 
+ 
 
 
-
-
-
-
-
+@csrf_exempt
+def verify_payment(request, scanner_id=None):
+    """
+    POST /api/public/shop/<scanner_id>/verify-payment/
+    Body: { razorpay_payment_id, razorpay_order_id, razorpay_signature, order_id }
+    """
+    if request.method != "POST":
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+ 
+    try:
+        data = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"status": "error", "detail": "Invalid JSON"}, status=400)
+ 
+    required = ["razorpay_payment_id", "razorpay_order_id", "razorpay_signature"]
+    for field in required:
+        if not data.get(field):
+            return JsonResponse(
+                {"status": "error", "detail": f"Missing field: {field}"},
+                status=400,
+            )
+ 
+    # Signature verification
+    msg = f"{data['razorpay_order_id']}|{data['razorpay_payment_id']}"
+    generated_sig = hmac.new(
+        settings.RAZORPAY_KEY_SECRET.encode("utf-8"),
+        msg.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+ 
+    if generated_sig != data["razorpay_signature"]:
+        return JsonResponse({"status": "failed", "detail": "Signature mismatch"}, status=400)
+ 
+    # Update order payment status
+    order_ref = str(data.get("order_id", "")).strip()
+    if order_ref:
+        from .models import CustomerOrder
+        updated = 0
+        try:
+            updated = CustomerOrder.objects.filter(id=int(order_ref)).update(
+                payment_status="paid",
+                payment_id=data["razorpay_payment_id"],
+            )
+        except (ValueError, TypeError):
+            pass
+        if not updated:
+            CustomerOrder.objects.filter(order_id=order_ref).update(
+                payment_status="paid",
+                payment_id=data["razorpay_payment_id"],
+            )
+ 
+    return JsonResponse({"status": "verified"})
+ 
 
 
 

@@ -375,54 +375,73 @@ class CustomerOrderItemWriteSerializer(serializers.Serializer):
     product_id = serializers.IntegerField()
     qty        = serializers.DecimalField(max_digits=10, decimal_places=2)
 
-
 class CustomerOrderWriteSerializer(serializers.Serializer):
     customer_name   = serializers.CharField(max_length=255)
     customer_mobile = serializers.CharField(max_length=15)
     advance         = serializers.DecimalField(max_digits=12, decimal_places=2)
+    payment_method  = serializers.CharField(max_length=50, required=False, default="razorpay")
     items           = CustomerOrderItemWriteSerializer(many=True)
-
+ 
+    def validate_payment_method(self, value):
+        ALLOWED = ["razorpay", "cash", "upi", "card", "mixed", "online", ""]
+        if value.lower() not in ALLOWED:
+            raise serializers.ValidationError(
+                f"payment_method must be one of: razorpay, cash, upi, card"
+            )
+        return value.lower()
+ 
     def validate(self, data):
         scanner  = self.context["scanner"]
         items    = data.get("items", [])
         advance  = data.get("advance", Decimal("0"))
-
+ 
         if not items:
             raise serializers.ValidationError({"items": "At least one item required."})
-        if advance < Decimal("10"):
-            raise serializers.ValidationError({"advance": "Minimum advance is ₹10."})
-
+ 
+        # ── FIX: validate advance is >= 0 (not a flat ₹10 minimum) ──
+        # The 10% minimum is enforced on the frontend slider.
+        # Backend only rejects if advance is negative.
+        if advance < Decimal("0"):
+            raise serializers.ValidationError({"advance": "Advance cannot be negative."})
+ 
         # Validate products belong to this shop and have stock
         errors = []
         for item in items:
             try:
-                product = Product.objects.get(id=item["product_id"], user=scanner.user, is_active=True)
+                product = Product.objects.get(
+                    id=item["product_id"],
+                    user=scanner.user,
+                    is_active=True,
+                )
                 if product.qty < item["qty"]:
-                    errors.append(f'"{product.name}": only {product.qty} {product.unit} available.')
+                    errors.append(
+                        f'"{product.name}": only {product.qty} {product.unit} available.'
+                    )
             except Product.DoesNotExist:
                 errors.append(f'Product ID {item["product_id"]} not found.')
-
+ 
         if errors:
             raise serializers.ValidationError({"stock": errors})
-
+ 
         return data
-
+ 
     def create(self, validated_data):
-        scanner  = self.context["scanner"]
-        items    = validated_data.pop("items")
-        advance  = validated_data["advance"]
-
+        scanner        = self.context["scanner"]
+        items          = validated_data.pop("items")
+        advance        = validated_data["advance"]
+        payment_method = validated_data.get("payment_method", "razorpay")
+ 
         # Calculate subtotal
-        subtotal = Decimal("0")
+        subtotal    = Decimal("0")
         product_map = {}
         for item in items:
             product = Product.objects.get(id=item["product_id"])
             product_map[item["product_id"]] = product
             subtotal += product.selling_price * item["qty"]
-
+ 
         if advance > subtotal:
-            raise serializers.ValidationError({"advance": "Advance cannot exceed total."})
-
+            advance = subtotal   # cap advance at total — don't raise error
+ 
         order = CustomerOrder.objects.create(
             user            = scanner.user,
             scanner         = scanner,
@@ -430,10 +449,14 @@ class CustomerOrderWriteSerializer(serializers.Serializer):
             customer_mobile = validated_data["customer_mobile"],
             subtotal        = subtotal,
             advance         = advance,
+            balance         = subtotal - advance,
             status          = "new",
+            # Save payment_method if your model has this field.
+            # If not, remove the line below and run: python manage.py makemigrations
+            **( {"payment_method": payment_method}
+                if hasattr(CustomerOrder, "payment_method") else {} ),
         )
-
-        # Create order items
+ 
         for item in items:
             product = product_map[item["product_id"]]
             CustomerOrderItem.objects.create(
@@ -444,8 +467,9 @@ class CustomerOrderWriteSerializer(serializers.Serializer):
                 price   = product.selling_price,
                 unit    = product.unit,
             )
-
+ 
         return order
+ 
 
 
 class CustomerOrderItemReadSerializer(serializers.ModelSerializer):
@@ -456,14 +480,18 @@ class CustomerOrderItemReadSerializer(serializers.ModelSerializer):
 
 class CustomerOrderReadSerializer(serializers.ModelSerializer):
     items = CustomerOrderItemReadSerializer(many=True, read_only=True)
-
+ 
     class Meta:
         model  = CustomerOrder
         fields = [
             "id", "order_id", "customer_name", "customer_mobile",
             "subtotal", "advance", "balance", "status",
+            "payment_id",       # razorpay payment id after verification
             "items", "created_at", "updated_at",
         ]
+        # If your model doesn't have payment_id yet, remove it from fields
+        # and add: payment_id = CharField to CustomerOrder model, then migrate.
+ 
 
 
 class ShopNotificationSerializer(serializers.ModelSerializer):
