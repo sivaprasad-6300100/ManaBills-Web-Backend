@@ -15,6 +15,8 @@ from rest_framework.permissions import AllowAny
 from .models import Invoice
 import json
 from django.shortcuts import get_object_or_404
+import hmac
+import hashlib
 from django.db import transaction as db_transaction
 from .models import ShopScanner, CustomerOrder, CustomerOrderItem, ShopNotification
 from .serializers import (
@@ -619,6 +621,12 @@ class PlaceOrderView(APIView):
  
         if not serializer.is_valid():
             # Return the actual validation errors so you can debug on the frontend
+            return Response(
+                {"detail": "Order validation failed", "errors": serializer.errors},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not serializer.is_valid():
+            print("SERIALIZER ERRORS:", serializer.errors)  # check your server logs
             return Response(
                 {"detail": "Order validation failed", "errors": serializer.errors},
                 status=status.HTTP_400_BAD_REQUEST,

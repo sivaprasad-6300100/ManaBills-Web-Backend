@@ -488,6 +488,8 @@ class CustomerOrder(models.Model):
     subtotal  = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     advance   = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     balance   = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    payment_method = models.CharField(max_length=50, default="razorpay", blank=True)
+    payment_id     = models.CharField(max_length=100, blank=True, default="")
 
     # Status
     status    = models.CharField(max_length=15, choices=STATUS_CHOICES, default="new")
