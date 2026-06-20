@@ -1,24 +1,33 @@
+import re
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.decorators import api_view, permission_classes
 from .serializers import SignupSerializer, LoginSerializer, ForgotPasswordSerializer, VerifyOtpSerializer, ResetPasswordSerializer
-from accounts.models import User, PasswordResetToken
-import random
+from accounts.models import User, OtpSession
+from accounts.otp_utils import send_otp, validate_otp
 
 
 class SignupView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
+        mobile = request.data.get("mobile_number")
+
+        session = OtpSession.objects.filter(
+            mobile_number=mobile, purpose="signup", is_verified=True, is_used=False
+        ).order_by("-created_at").first()
+
+        if not session or session.is_expired:
+            return Response({"error": "Please verify your mobile number first."}, status=400)
+
         serializer = SignupSerializer(data=request.data)
         if serializer.is_valid():
             serializer.save()
-            return Response(
-                {"message": "User registered successfully"},
-                status=status.HTTP_201_CREATED
-            )
+            session.is_used = True
+            session.save()
+            return Response({"message": "User registered successfully"}, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -43,101 +52,133 @@ class ProtectedView(APIView):
         })
 
 
-
-# seeing data manually
-
-# ==================
-# ========
 class UsersListView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         users = User.objects.all().values("id", "mobile_number")
         return Response(users)
-# =======================
-# =======================
+
+
+# ─── SIGNUP OTP (replaces Firebase) ───
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def send_signup_otp(request):
+    mobile = (request.data.get("mobile_number") or "").strip()
+    if not re.match(r'^\d{10}$', mobile):
+        return Response({"error": "Enter a valid 10-digit mobile number."}, status=400)
+
+    if User.objects.filter(mobile_number=mobile).exists():
+        return Response({"error": "Mobile number already registered."}, status=400)
+
+    OtpSession.objects.filter(mobile_number=mobile, purpose="signup", is_used=False).delete()
+
+    try:
+        verification_id = send_otp(mobile)
+    except Exception:
+        return Response({"error": "Failed to send OTP. Try again."}, status=500)
+
+    OtpSession.objects.create(mobile_number=mobile, verification_id=verification_id, purpose="signup")
+    return Response({"message": "OTP sent successfully."})
 
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
+def verify_signup_otp(request):
+    mobile = (request.data.get("mobile_number") or "").strip()
+    code = (request.data.get("otp") or "").strip()
+
+    session = OtpSession.objects.filter(
+        mobile_number=mobile, purpose="signup", is_used=False
+    ).order_by("-created_at").first()
+
+    if not session:
+        return Response({"error": "No OTP request found. Please request a new OTP."}, status=400)
+
+    if session.is_expired:
+        return Response({"error": "OTP expired. Please request a new one."}, status=400)
+
+    if validate_otp(session.verification_id, code):
+        session.is_verified = True
+        session.save()
+        return Response({"message": "Mobile number verified successfully."})
+
+    return Response({"error": "Invalid OTP. Please try again."}, status=400)
+
+
+# ─── FORGOT PASSWORD (now uses real SMS instead of console-printed OTP) ───
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
 def forgot_password(request):
-    """Step 1: User submits mobile → generate OTP"""
     serializer = ForgotPasswordSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
-
     mobile = serializer.validated_data['mobile_number']
-    user = User.objects.get(mobile_number=mobile)
 
-    # Delete old unused tokens for this user
-    PasswordResetToken.objects.filter(user=user, is_used=False).delete()
+    if not User.objects.filter(mobile_number=mobile).exists():
+        return Response({"error": "Mobile number not found."}, status=400)
 
-    # Generate 6-digit OTP
-    otp = str(random.randint(100000, 999999))
+    OtpSession.objects.filter(mobile_number=mobile, purpose="reset", is_used=False).delete()
 
-    PasswordResetToken.objects.create(user=user, otp=otp)
+    try:
+        verification_id = send_otp(mobile)
+    except Exception:
+        return Response({"error": "Failed to send OTP. Try again."}, status=500)
 
-    # TODO: Send OTP via SMS (Twilio / Fast2SMS / MSG91)
-    # For now just print to console in development:
-    print(f"OTP for {mobile}: {otp}")
-
-    return Response({
-        "message": "OTP sent successfully.",
-        "otp": otp  # REMOVE THIS IN PRODUCTION — only for dev/testing
-    })
+    OtpSession.objects.create(mobile_number=mobile, verification_id=verification_id, purpose="reset")
+    return Response({"message": "OTP sent successfully."})
 
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def verify_otp(request):
-    """Step 2: Verify OTP is valid"""
     serializer = VerifyOtpSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
-
     mobile = serializer.validated_data['mobile_number']
     otp = serializer.validated_data['otp']
 
-    try:
-        user = User.objects.get(mobile_number=mobile)
-        token = PasswordResetToken.objects.filter(
-            user=user, otp=otp, is_used=False
-        ).latest('created_at')
-    except (User.DoesNotExist, PasswordResetToken.DoesNotExist):
+    session = OtpSession.objects.filter(
+        mobile_number=mobile, purpose="reset", is_used=False
+    ).order_by("-created_at").first()
+
+    if not session:
         return Response({"error": "Invalid OTP."}, status=400)
 
-    if token.is_expired:
+    if session.is_expired:
         return Response({"error": "OTP has expired. Please request a new one."}, status=400)
 
+    if not validate_otp(session.verification_id, otp):
+        return Response({"error": "Invalid OTP."}, status=400)
+
+    session.is_verified = True
+    session.save()
     return Response({"message": "OTP verified. You can now reset your password."})
 
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def reset_password(request):
-    """Step 3: Set new password"""
     serializer = ResetPasswordSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
-
     mobile = serializer.validated_data['mobile_number']
-    otp = serializer.validated_data['otp']
     new_password = serializer.validated_data['new_password']
 
-    try:
-        user = User.objects.get(mobile_number=mobile)
-        token = PasswordResetToken.objects.filter(
-            user=user, otp=otp, is_used=False
-        ).latest('created_at')
-    except (User.DoesNotExist, PasswordResetToken.DoesNotExist):
-        return Response({"error": "Invalid OTP."}, status=400)
+    session = OtpSession.objects.filter(
+        mobile_number=mobile, purpose="reset", is_verified=True, is_used=False
+    ).order_by("-created_at").first()
 
-    if token.is_expired:
-        return Response({"error": "OTP expired. Please request a new one."}, status=400)
+    if not session:
+        return Response({"error": "Please verify OTP again."}, status=400)
 
-    # Set new password
+    if session.is_expired:
+        return Response({"error": "Session expired. Please start again."}, status=400)
+
+    user = User.objects.get(mobile_number=mobile)
     user.set_password(new_password)
     user.save()
 
-    # Mark token as used
-    token.is_used = True
-    token.save()
+    session.is_used = True
+    session.save()
 
     return Response({"message": "Password reset successfully. Please sign in."})

@@ -58,22 +58,20 @@ class User(AbstractBaseUser, PermissionsMixin):
         return self.mobile_number or self.full_name
 
 
-class PasswordResetToken(models.Model):
-    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='reset_tokens')
-    token = models.UUIDField(default=uuid.uuid4, unique=True)
-    otp = models.CharField(max_length=6)
+class OtpSession(models.Model):
+    PURPOSE_CHOICES = (
+        ("signup", "Signup"),
+        ("reset", "Reset"),
+        ("customer", "Customer Login"),
+    )
+
+    mobile_number = models.CharField(max_length=15)
+    verification_id = models.CharField(max_length=50)
+    purpose = models.CharField(max_length=10, choices=PURPOSE_CHOICES)
+    is_verified = models.BooleanField(default=False)
     is_used = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
-    expires_at = models.DateTimeField()
-
-    def save(self, *args, **kwargs):
-        if not self.expires_at:
-            self.expires_at = timezone.now() + timedelta(minutes=10)
-        super().save(*args, **kwargs)
 
     @property
     def is_expired(self):
-        return timezone.now() > self.expires_at
-
-    def __str__(self):
-        return f"{self.user.mobile_number} - {self.otp}"
+        return timezone.now() > self.created_at + timedelta(minutes=10)

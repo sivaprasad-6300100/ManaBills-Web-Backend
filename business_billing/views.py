@@ -26,6 +26,10 @@ from .serializers import (
 )
 from django.views.decorators.csrf import csrf_exempt
 client = razorpay.Client(auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET))
+import re
+from accounts.models import OtpSession
+from accounts.otp_utils import send_otp, validate_otp
+from .models import ShopCustomer
 
 
 
@@ -788,6 +792,115 @@ class PublicOrdersByMobileView(APIView):
 #            Razorpay integrations for public orders
 
 # ======================================================
+
+# ─── PUBLIC — Customer login OTP (Message Central, per-shop) ────
+
+class SendCustomerOtpView(APIView):
+    """
+    POST /api/public/shop/<scanner_id>/send-otp/
+    Body: { mobile_number }
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request, scanner_id):
+        get_object_or_404(ShopScanner, scanner_id=scanner_id, is_active=True)
+
+        mobile = (request.data.get("mobile_number") or "").strip()
+        if not re.match(r'^\d{10}$', mobile):
+            return Response({"error": "Enter a valid 10-digit mobile number."}, status=400)
+
+        OtpSession.objects.filter(mobile_number=mobile, purpose="customer", is_used=False).delete()
+
+        try:
+            verification_id = send_otp(mobile)
+        except Exception:
+            return Response({"error": "Failed to send OTP. Try again."}, status=500)
+
+        OtpSession.objects.create(mobile_number=mobile, verification_id=verification_id, purpose="customer")
+        return Response({"message": "OTP sent successfully."})
+
+
+class VerifyCustomerOtpView(APIView):
+    """
+    POST /api/public/shop/<scanner_id>/verify-otp/
+    Body: { mobile_number, otp }
+    Returns { name: "..." } if this mobile has visited this shop before,
+    otherwise {} — frontend then shows the one-time name screen.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request, scanner_id):
+        scanner = get_object_or_404(ShopScanner, scanner_id=scanner_id, is_active=True)
+
+        mobile = (request.data.get("mobile_number") or "").strip()
+        code   = (request.data.get("otp") or "").strip()
+
+        session = OtpSession.objects.filter(
+            mobile_number=mobile, purpose="customer", is_used=False
+        ).order_by("-created_at").first()
+
+        if not session:
+            return Response({"error": "No OTP request found. Please request a new OTP."}, status=400)
+        if session.is_expired:
+            return Response({"error": "OTP expired. Please request a new one."}, status=400)
+        if not validate_otp(session.verification_id, code):
+            return Response({"error": "Incorrect OTP. Please try again."}, status=400)
+
+        session.is_verified = True
+
+        existing = ShopCustomer.objects.filter(scanner=scanner, mobile_number=mobile).first()
+        if existing:
+            # Returning customer — flow is complete, close out the session now.
+            session.is_used = True
+            session.save()
+            return Response({"name": existing.name})
+
+        # First time at this shop — leave session verified-but-unused so
+        # save-customer-name below can confirm it before creating the record.
+        session.save()
+        return Response({})
+
+
+class SaveCustomerNameView(APIView):
+    """
+    POST /api/public/shop/<scanner_id>/save-customer-name/
+    Body: { mobile_number, name }
+    Only succeeds if that mobile number has a verified, unused OTP session —
+    same gap-closing pattern as SignupView.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request, scanner_id):
+        scanner = get_object_or_404(ShopScanner, scanner_id=scanner_id, is_active=True)
+
+        mobile = (request.data.get("mobile_number") or "").strip()
+        name   = (request.data.get("name") or "").strip()
+
+        if not re.match(r'^\d{10}$', mobile):
+            return Response({"error": "Invalid mobile number."}, status=400)
+        if len(name) < 2:
+            return Response({"error": "Please enter a valid name."}, status=400)
+
+        session = OtpSession.objects.filter(
+            mobile_number=mobile, purpose="customer", is_verified=True, is_used=False
+        ).order_by("-created_at").first()
+
+        if not session or session.is_expired:
+            return Response({"error": "Please verify your mobile number first."}, status=400)
+
+        ShopCustomer.objects.update_or_create(
+            scanner=scanner, mobile_number=mobile,
+            defaults={"name": name},
+        )
+        session.is_used = True
+        session.save()
+
+        return Response({"message": "Saved successfully.", "name": name})
+    
+
+
+
+    
 
 # ✅ CORRECT — save razorpay_order_id to your CustomerOrder
 

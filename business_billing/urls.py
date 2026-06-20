@@ -38,6 +38,10 @@ urlpatterns = [
     path("shop/<str:scanner_id>/create-razorpay-order/", views.create_razorpay_order),
     path("shop/<str:scanner_id>/verify-payment/",    views.verify_payment),
 
+    path("shop/<str:scanner_id>/send-otp/",            views.SendCustomerOtpView.as_view()),
+    path("shop/<str:scanner_id>/verify-otp/",           views.VerifyCustomerOtpView.as_view()),
+    path("shop/<str:scanner_id>/save-customer-name/",   views.SaveCustomerNameView.as_view()),
+
 
     
     path('itc-opening-balance/', views.itc_opening_balance),

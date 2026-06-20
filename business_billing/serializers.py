@@ -347,14 +347,9 @@ class ShopScannerSerializer(serializers.ModelSerializer):
         fields = ["id", "scanner_id", "is_active", "scan_count", "qr_url", "created_at"]
         read_only_fields = ["id", "scanner_id", "scan_count", "qr_url", "created_at"]
 
-    def get_qr_url(self, obj):
-        request = self.context.get("request")
-        if request:
-            scheme = "https" if request.is_secure() else "http"
-            host = request.META.get("HTTP_HOST", "").replace(":8000", ":3000")
-            return f"{scheme}://{host}/shop/{obj.scanner_id}"
-        return f"https://manabills.in/shop/{obj.scanner_id}"
-    
+        def get_qr_url(self, obj):
+            from django.conf import settings
+            return f"{settings.FRONTEND_BASE_URL}/shop/{obj.scanner_id}"
 
     
 class PublicShopSerializer(serializers.ModelSerializer):

@@ -15,7 +15,8 @@ DEBUG = os.environ.get('DEBUG', 'False') == 'True'
 ALLOWED_HOSTS = [
     'localhost',
     '127.0.0.1',
-    '.railway.app',
+    'api.manabills.com',
+    '46.202.164.45',
 ]
 
 # APPLICATIONS
@@ -167,3 +168,10 @@ CSRF_TRUSTED_ORIGINS = [
 ]
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+
+
+MESSAGE_CENTRAL_CUSTOMER_ID = os.environ.get("MESSAGE_CENTRAL_CUSTOMER_ID")
+MESSAGE_CENTRAL_AUTH_TOKEN = os.environ.get("MESSAGE_CENTRAL_AUTH_TOKEN")
+
+FRONTEND_BASE_URL = os.environ.get("FRONTEND_BASE_URL", "http://localhost:3000")

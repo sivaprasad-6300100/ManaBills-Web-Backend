@@ -457,7 +457,7 @@ class ShopScanner(models.Model):
     @property
     def qr_url(self):
         """The URL that gets embedded in the QR code"""
-        return f"https://manabills.in/shop/{self.scanner_id}"
+        return f"https://manabills.com/shop/{self.scanner_id}"
 
 
 class CustomerOrder(models.Model):
@@ -561,6 +561,27 @@ class ShopNotification(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
+
+
+
+
+class ShopCustomer(models.Model):
+    """
+    A customer recognized per-shop (per ShopScanner), so returning
+    customers skip the name step on any device — recognized by mobile number.
+    """
+    scanner       = models.ForeignKey(ShopScanner, on_delete=models.CASCADE, related_name="shop_customers")
+    mobile_number = models.CharField(max_length=15)
+    name          = models.CharField(max_length=255)
+    created_at    = models.DateTimeField(auto_now_add=True)
+    updated_at    = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ["scanner", "mobile_number"]
+        verbose_name = "Shop Customer"
+
+    def __str__(self):
+        return f"{self.name} ({self.mobile_number}) — {self.scanner.scanner_id}"
 
 
 # @receiver(post_save, sender='accounts.User')
