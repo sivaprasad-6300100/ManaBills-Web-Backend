@@ -42,6 +42,7 @@ def activate_subscription(request):
     module     = request.data.get("module")
     plan_key   = request.data.get("plan_key", "")
     duration   = request.data.get("duration", "1 Month")
+    
     payment_id = request.data.get("payment_id", "")
     amount     = request.data.get("amount", 0)
 
@@ -50,6 +51,37 @@ def activate_subscription(request):
             {"error": "module is required"},
             status=status.HTTP_400_BAD_REQUEST,
         )
+    
+    existing = Subscription.objects.filter(
+        user=request.user,
+        module=module,
+        status="active",
+    ).first()
+
+    # Allow upgrade (Basic → Pro or vice versa)
+    PLAN_TIER = {
+        "business_basic": 1, "business_pro": 2,
+        "home_basic": 1, "home_pro": 2,
+        "construction_basic": 1, "construction_pro": 2,
+        "custom_basic": 1, "custom_pro": 2,
+    }
+    current_tier = PLAN_TIER.get(existing.plan_key if existing else "", 0)
+    new_tier = PLAN_TIER.get(plan_key, 0)
+    is_upgrade = new_tier > current_tier
+
+    if existing and existing.expires_at and timezone.now() < existing.expires_at and not is_upgrade:
+        days_left = (existing.expires_at - timezone.now()).days
+        return Response(
+            {"error": f"Your plan is still active. Expires in {days_left} day(s). You can renew after it expires."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    
+    
+    
+    
+    
+    
 
     # ── Razorpay payment verification ────────────────────────────────────────
     if payment_id:
@@ -72,7 +104,7 @@ def activate_subscription(request):
                     {"error": "Payment amount mismatch"},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-
+    
         except razorpay.errors.BadRequestError:
             return Response(
                 {"error": "Invalid payment ID"},
