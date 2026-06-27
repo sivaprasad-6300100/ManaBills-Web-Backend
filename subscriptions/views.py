@@ -78,11 +78,6 @@ def activate_subscription(request):
 
     
     
-    
-    
-    
-    
-
     # ── Razorpay payment verification ────────────────────────────────────────
     if payment_id:
         try:

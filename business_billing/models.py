@@ -222,6 +222,7 @@ class Product(models.Model):
                                    name="product_selling_price_non_negative"),
             models.CheckConstraint(condition=models.Q(purchase_price__gte=0),
                                    name="product_purchase_price_non_negative"),
+                                   
         ]
 
     def __str__(self):
@@ -263,7 +264,7 @@ class Invoice(models.Model):
                      User, on_delete=models.CASCADE,
                      related_name="bb_invoices"
                  )
-    invoice_id = models.CharField(max_length=30, unique=True)   # INV-YYMMDD-XXXX
+    invoice_id = models.CharField(max_length=30)
 
     # ── Customer snapshot ─────────────────────────────────────
     customer        = models.ForeignKey(
@@ -326,6 +327,12 @@ class Invoice(models.Model):
             # Trigram index for customer name search
             GinIndex(fields=["customer_name"], name="invoice_custname_gin",
                      opclasses=["gin_trgm_ops"]),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "invoice_id"],
+                name="unique_invoice_id_per_user"
+            ),
         ]
 
     def __str__(self):
