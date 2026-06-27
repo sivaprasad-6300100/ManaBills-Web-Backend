@@ -309,13 +309,11 @@ class StockStatsView(APIView):
 # ═══════════════════════════════════════════════════════════════
 #   4.  INVOICES
 # ═══════════════════════════════════════════════════════════════
+
 class InvoiceListCreateView(generics.ListCreateAPIView):
     """
     GET  /api/business/invoices/   → list invoices
-         ?status=Paid/Partial/Pending
-         ?payment=Cash/UPI/...
-         ?search=<customer name / invoice id / mobile>
-    POST /api/business/invoices/   → create invoice (auto-deducts stock)
+    ...
     """
     permission_classes = [permissions.IsAuthenticated]
 
@@ -323,6 +321,18 @@ class InvoiceListCreateView(generics.ListCreateAPIView):
         if self.request.method == "POST":
             return InvoiceWriteSerializer
         return InvoiceReadSerializer
+
+    def create(self, request, *args, **kwargs):
+        serializer = InvoiceWriteSerializer(
+            data=request.data,
+            context={"request": request}
+        )
+        serializer.is_valid(raise_exception=True)
+        invoice = serializer.save()
+        return Response(
+            InvoiceReadSerializer(invoice).data,
+            status=status.HTTP_201_CREATED
+        )
 
     def get_queryset(self):
         qs      = Invoice.objects.filter(user=self.request.user).prefetch_related("items")
