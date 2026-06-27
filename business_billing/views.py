@@ -1017,33 +1017,34 @@ def verify_payment(request, scanner_id=None):
             )
  
     return JsonResponse({"status": "verified"})
- 
 
 
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def public_invoice_view(request, invoice_id):
-    try:
-        invoice = Invoice.objects.get(invoice_id=invoice_id)
-        data = PublicInvoiceSerializer(invoice).data
-
-        # Fill missing shop details from live ShopProfile
-        if not data.get("shop_owner") or not data.get("shop_mobile"):
-            try:
-                p = invoice.user.shop_profile
-                data["shop_name"]    = data.get("shop_name")    or p.shop_name    or ""
-                data["shop_owner"]   = data.get("shop_owner")   or p.owner_name   or ""
-                data["shop_mobile"]  = data.get("shop_mobile")  or p.mobile       or ""
-                data["shop_address"] = data.get("shop_address") or p.address      or ""
-                data["shop_gst"]     = data.get("shop_gst")     or p.gst_number   or ""
-            except Exception:
-                pass
-
-        return Response(data)
-    except Invoice.DoesNotExist:
+    # Try public_token first (new format), then invoice_id (old invoices)
+    invoice = (
+        Invoice.objects.filter(public_token=invoice_id).first()
+        or Invoice.objects.filter(invoice_id=invoice_id).first()
+    )
+    if not invoice:
         return Response({'error': 'Invoice not found'}, status=status.HTTP_404_NOT_FOUND)
-    
+
+    data = PublicInvoiceSerializer(invoice).data
+
+    if not data.get("shop_owner") or not data.get("shop_mobile"):
+        try:
+            p = invoice.user.shop_profile
+            data["shop_name"]    = data.get("shop_name")    or p.shop_name    or ""
+            data["shop_owner"]   = data.get("shop_owner")   or p.owner_name   or ""
+            data["shop_mobile"]  = data.get("shop_mobile")  or p.mobile       or ""
+            data["shop_address"] = data.get("shop_address") or p.address      or ""
+            data["shop_gst"]     = data.get("shop_gst")     or p.gst_number   or ""
+        except Exception:
+            pass
+
+    return Response(data)
 
 
 @api_view(["GET"])

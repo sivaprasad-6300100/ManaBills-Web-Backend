@@ -131,7 +131,7 @@ class InvoiceReadSerializer(serializers.ModelSerializer):
     class Meta:
         model  = Invoice
         fields = [
-            "id", "invoice_id",
+            "id", "invoice_id","public_token",
             "customer", "customer_name", "customer_mobile", "customer_gst",
             "shop_name", "shop_address", "shop_gst",
             "subtotal", "gst_amt", "discount", "advance",
@@ -525,6 +525,7 @@ class PublicInvoiceSerializer(serializers.ModelSerializer):
         model = Invoice
         fields = [
             'invoice_id',
+            'public_token',
             'date',
             'customer_name',
             'customer_mobile',

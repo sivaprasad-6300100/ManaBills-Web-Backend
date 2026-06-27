@@ -264,7 +264,10 @@ class Invoice(models.Model):
                      User, on_delete=models.CASCADE,
                      related_name="bb_invoices"
                  )
-    invoice_id = models.CharField(max_length=30)
+    invoice_id   = models.CharField(max_length=30)
+    public_token = models.CharField(max_length=20, unique=True, blank=True, default="")
+
+
 
     # ── Customer snapshot ─────────────────────────────────────
     customer        = models.ForeignKey(
@@ -337,9 +340,14 @@ class Invoice(models.Model):
 
     def __str__(self):
         return f"{self.invoice_id} — {self.customer_name} — ₹{self.total}"
+    
 
     def save(self, *args, **kwargs):
-        # Auto-calculate balance and status before save
+        # Auto-generate unique public token for shareable invoice URL
+        if not self.public_token:
+            import uuid
+            self.public_token = uuid.uuid4().hex[:12].upper()
+        
         self.balance = self.total - self.advance
         if self.advance >= self.total:
             self.status = "Paid"
