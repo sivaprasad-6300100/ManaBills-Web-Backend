@@ -115,6 +115,10 @@ STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 # Use simple storage instead of CompressedManifest (fixes admin CSS)
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedStaticFilesStorage'
 
+# MEDIA FILES (user uploads — shop logos etc.)
+MEDIA_URL = '/media/'
+MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
+
 
 
 # AUTH

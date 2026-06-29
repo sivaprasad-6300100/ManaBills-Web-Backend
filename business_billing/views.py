@@ -48,6 +48,14 @@ from .serializers import (
     DashboardStatsSerializer,
 )
 
+
+
+from rest_framework.parsers import MultiPartParser, FormParser
+from django.core.files.storage import default_storage
+from django.core.files.base import ContentFile
+
+
+
 # ── Helper: date string DD/MM/YYYY → date object ──────────────
 MONTHS = [
     "January","February","March","April","May","June",
@@ -1604,82 +1612,34 @@ def chart_stats(request):
         return Response(result)
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+class ShopLogoUploadView(APIView):
+    """
+    POST /api/business/shop-profile/logo/
+    Body: multipart/form-data with field "logo"
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request):
+        file = request.FILES.get("logo")
+        if not file:
+            return Response({"error": "No file provided"}, status=400)
+        if not file.content_type.startswith("image/"):
+            return Response({"error": "Only image files are allowed"}, status=400)
+
+        shop_profile, _ = ShopProfile.objects.get_or_create(user=request.user)
+
+        if shop_profile.logo_url:
+            old_path = shop_profile.logo_url.split("/media/")[-1]
+            if default_storage.exists(old_path):
+                default_storage.delete(old_path)
+
+        ext = file.name.split(".")[-1]
+        path = f"logos/{request.user.id}/logo.{ext}"
+        saved_path = default_storage.save(path, ContentFile(file.read()))
+        logo_url = request.build_absolute_uri(default_storage.url(saved_path))
+
+        shop_profile.logo_url = logo_url
+        shop_profile.save(update_fields=["logo_url"])
+
+        return Response({"logo_url": logo_url}, status=200)
