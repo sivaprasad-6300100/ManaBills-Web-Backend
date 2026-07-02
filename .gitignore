@@ -27,3 +27,5 @@ media/
 # Node modules (if using React inside backend)
 node_modules/
 build/
+manabills_backup_fixture.json
+staticfiles/
