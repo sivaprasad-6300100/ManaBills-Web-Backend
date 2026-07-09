@@ -11,12 +11,13 @@ from business_billing.models import Invoice, StockTransaction, CustomerOrder, Pr
 
 @admin.register(User)
 class UserAdmin(admin.ModelAdmin):
-    list_display = ('mobile_number', 'full_name', 'plan_badge', 'churn_badge',
+    list_display = ('mobile_number', 'full_name','referral_code', 'referred_by_display', 'plan_badge', 'churn_badge',
                      'invoice_count_30d', 'ltv', 'date_joined')
     readonly_fields = ('activity_summary', 'date_joined')
     fieldsets = (
         (None, {'fields': ('mobile_number', 'password')}),
         ('Personal Info', {'fields': ('full_name',)}),
+        ('Referral', {'fields': ('referral_code', 'referred_by')}),
         ('Full Activity Overview', {'fields': ('activity_summary',)}),
         ('Permissions', {'fields': ('is_active', 'is_staff', 'is_superuser')}),
         ('Dates', {'fields': ('date_joined',)}),
@@ -41,6 +42,13 @@ class UserAdmin(admin.ModelAdmin):
         return obj.invoices_30d
     invoice_count_30d.short_description = "Invoices (30d)"
     invoice_count_30d.admin_order_field = 'invoices_30d'
+
+    def referred_by_display(self, obj):
+        if not obj.referred_by:
+            return mark_safe('<span style="color:#999;">—</span>')
+        return format_html('{} ({})', obj.referred_by.full_name or "—", obj.referred_by.mobile_number)
+    referred_by_display.short_description = "Referred By"
+
 
     def plan_badge(self, obj):
         sub = obj.subscriptions.filter(status='active').first()

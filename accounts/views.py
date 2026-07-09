@@ -197,3 +197,27 @@ def reset_password(request):
     session.save()
 
     return Response({"message": "Password reset successfully. Please sign in."})
+
+
+
+
+
+
+
+
+
+
+class MyReferralView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        referred_users = User.objects.filter(referred_by=user).values(
+            "full_name", "mobile_number", "date_joined"
+        )
+        return Response({
+            "referral_code": user.referral_code,
+            "referral_link": f"https://manabills.com/?ref={user.referral_code}",
+            "total_referred": referred_users.count(),
+            "referred_users": list(referred_users),
+        })
