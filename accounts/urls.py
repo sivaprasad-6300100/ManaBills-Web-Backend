@@ -2,7 +2,7 @@ from django.urls import path
 from .views import (
     SignupView, LoginView, ProtectedView, UsersListView,
     forgot_password, verify_otp, reset_password,
-    send_signup_otp, verify_signup_otp,
+    send_signup_otp, verify_signup_otp,MyReferralView
 )
 
 urlpatterns = [
@@ -19,4 +19,5 @@ urlpatterns = [
     path('forgot-password/', forgot_password, name='forgot-password'),
     path('verify-otp/', verify_otp, name='verify-otp'),
     path('reset-password/', reset_password, name='reset-password'),
+    path("my-referral/", MyReferralView.as_view(), name="my-referral"),
 ]

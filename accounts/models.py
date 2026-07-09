@@ -8,6 +8,9 @@ import uuid
 from django.utils import timezone
 from datetime import timedelta
 
+import random
+import string
+
 
 class UserManager(BaseUserManager):
     def create_user(self, password=None, mobile_number=None, **extra_fields):
@@ -48,11 +51,26 @@ class User(AbstractBaseUser, PermissionsMixin):
     is_staff = models.BooleanField(default=False)
 
     date_joined = models.DateTimeField(auto_now_add=True)
+    referral_code = models.CharField(max_length=10, unique=True, blank=True, null=True)
+    referred_by = models.ForeignKey(
+        'self',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='referrals'
+    )
 
     objects = UserManager()
 
     USERNAME_FIELD = 'mobile_number'
     REQUIRED_FIELDS = []
+
+
+    def save(self, *args, **kwargs):
+        if not self.referral_code:
+            self.referral_code = generate_referral_code()
+        super().save(*args, **kwargs)
+        
 
     def __str__(self):
         return self.mobile_number or self.full_name
@@ -75,3 +93,16 @@ class OtpSession(models.Model):
     @property
     def is_expired(self):
         return timezone.now() > self.created_at + timedelta(minutes=10)
+    
+
+
+
+
+
+def generate_referral_code():
+    """Generates a unique MB + 6 alphanumeric char code, e.g. MB4X9K2A"""
+    chars = string.ascii_uppercase + string.digits
+    while True:
+        code = "MB" + "".join(random.choices(chars, k=6))
+        if not User.objects.filter(referral_code=code).exists():
+            return code
