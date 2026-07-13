@@ -1,6 +1,6 @@
 from django.urls import path
 from . import views
-from .views import PublicShopView, PlaceOrderView, PublicOrdersByMobileView,ShopLogoUploadView 
+from .views import PublicShopView, PlaceOrderView, PublicOrdersByMobileView,ShopLogoUploadView,ProductImageUploadView
 
 
 
@@ -62,6 +62,7 @@ urlpatterns = [
 
     path("chart-stats/", views.chart_stats, name="chart-stats"),
      path("shop-profile/logo/", ShopLogoUploadView.as_view(), name="shop-logo-upload"),
+     path("products/<int:pk>/image/", ProductImageUploadView.as_view(), name="product-image-upload"),
 ]
 
 

@@ -60,7 +60,7 @@ class ProductSerializer(serializers.ModelSerializer):
         model  = Product
         fields = [
             # Core
-            "id", "name", "category", "unit",
+            "id", "name", "category", "unit","image_url",
             "purchase_price", "selling_price",
             "qty", "min_qty_alert", "hsn_code",
             "gst_rate", "purchase_gst",          # ← ADD
@@ -363,7 +363,7 @@ class PublicProductSerializer(serializers.ModelSerializer):
     """Products shown to customer — only what they need"""
     class Meta:
         model  = Product
-        fields = ["id", "name", "category", "unit", "selling_price", "qty", "min_qty_alert"]
+        fields = ["id", "name","image_url", "category", "unit", "selling_price", "qty", "min_qty_alert"]
 
 
 class CustomerOrderItemWriteSerializer(serializers.Serializer):

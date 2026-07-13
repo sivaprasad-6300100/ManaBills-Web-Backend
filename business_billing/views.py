@@ -1643,3 +1643,37 @@ class ShopLogoUploadView(APIView):
         shop_profile.save(update_fields=["logo_url"])
 
         return Response({"logo_url": logo_url}, status=200)
+    
+
+
+class ProductImageUploadView(APIView):
+    """
+    POST /api/business/products/<id>/image/
+    Body: multipart/form-data with field "image"
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request, pk):
+        product = get_object_or_404(Product, pk=pk, user=request.user)
+
+        file = request.FILES.get("image")
+        if not file:
+            return Response({"error": "No file provided"}, status=400)
+        if not file.content_type.startswith("image/"):
+            return Response({"error": "Only image files are allowed"}, status=400)
+
+        if product.image_url:
+            old_path = product.image_url.split("/media/")[-1]
+            if default_storage.exists(old_path):
+                default_storage.delete(old_path)
+
+        ext = file.name.split(".")[-1]
+        path = f"products/{request.user.id}/{product.id}.{ext}"
+        saved_path = default_storage.save(path, ContentFile(file.read()))
+        image_url = request.build_absolute_uri(default_storage.url(saved_path))
+
+        product.image_url = image_url
+        product.save(update_fields=["image_url"])
+
+        return Response({"image_url": image_url}, status=200)
