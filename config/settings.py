@@ -182,3 +182,26 @@ MESSAGE_CENTRAL_CUSTOMER_ID = os.environ.get("MESSAGE_CENTRAL_CUSTOMER_ID")
 MESSAGE_CENTRAL_AUTH_TOKEN = os.environ.get("MESSAGE_CENTRAL_AUTH_TOKEN")
 
 FRONTEND_BASE_URL = os.environ.get("FRONTEND_BASE_URL", "http://localhost:3000")
+
+
+LOG_DIR = os.path.join(BASE_DIR, 'logs')
+os.makedirs(LOG_DIR, exist_ok=True)
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'handlers': {
+        'file': {
+            'level': 'ERROR',
+            'class': 'logging.FileHandler',
+            'filename': os.path.join(LOG_DIR, 'django_errors.log'),
+        },
+    },
+    'loggers': {
+        'django': {
+            'handlers': ['file'],
+            'level': 'ERROR',
+            'propagate': True,
+        },
+    },
+}

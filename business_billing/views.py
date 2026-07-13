@@ -53,6 +53,20 @@ from .serializers import (
 from rest_framework.parsers import MultiPartParser, FormParser
 from django.core.files.storage import default_storage
 from django.core.files.base import ContentFile
+from PIL import Image
+import io
+import time
+
+def compress_image(file, max_size=(800, 800), quality=75):
+    """Resize + compress uploaded image before saving. Always outputs JPEG."""
+    img = Image.open(file)
+    if img.mode in ("RGBA", "P", "LA"):
+        img = img.convert("RGB")
+    img.thumbnail(max_size, Image.LANCZOS)
+    buffer = io.BytesIO()
+    img.save(buffer, format="JPEG", quality=quality, optimize=True)
+    buffer.seek(0)
+    return buffer
 
 
 
@@ -1634,11 +1648,10 @@ class ShopLogoUploadView(APIView):
             if default_storage.exists(old_path):
                 default_storage.delete(old_path)
 
-        ext = file.name.split(".")[-1]
-        path = f"logos/{request.user.id}/logo.{ext}"
-        saved_path = default_storage.save(path, ContentFile(file.read()))
-        logo_url = request.build_absolute_uri(default_storage.url(saved_path))
-
+        compressed = compress_image(file, max_size=(512, 512), quality=75)
+        path = f"logos/{request.user.id}/logo.jpg"
+        saved_path = default_storage.save(path, ContentFile(compressed.read()))
+        logo_url = request.build_absolute_uri(default_storage.url(saved_path)) + f"?v={int(time.time())}"
         shop_profile.logo_url = logo_url
         shop_profile.save(update_fields=["logo_url"])
 
@@ -1668,11 +1681,10 @@ class ProductImageUploadView(APIView):
             if default_storage.exists(old_path):
                 default_storage.delete(old_path)
 
-        ext = file.name.split(".")[-1]
-        path = f"products/{request.user.id}/{product.id}.{ext}"
-        saved_path = default_storage.save(path, ContentFile(file.read()))
-        image_url = request.build_absolute_uri(default_storage.url(saved_path))
-
+                compressed = compress_image(file, max_size=(800, 800), quality=75)
+        path = f"products/{request.user.id}/{product.id}.jpg"
+        saved_path = default_storage.save(path, ContentFile(compressed.read()))
+        image_url = request.build_absolute_uri(default_storage.url(saved_path)) + f"?v={int(time.time())}"
         product.image_url = image_url
         product.save(update_fields=["image_url"])
 
