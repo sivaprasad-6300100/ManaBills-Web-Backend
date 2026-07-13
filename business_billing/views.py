@@ -1681,7 +1681,7 @@ class ProductImageUploadView(APIView):
             if default_storage.exists(old_path):
                 default_storage.delete(old_path)
 
-                compressed = compress_image(file, max_size=(800, 800), quality=75)
+        compressed = compress_image(file, max_size=(800, 800), quality=75)
         path = f"products/{request.user.id}/{product.id}.jpg"
         saved_path = default_storage.save(path, ContentFile(compressed.read()))
         image_url = request.build_absolute_uri(default_storage.url(saved_path)) + f"?v={int(time.time())}"
