@@ -837,7 +837,7 @@ class SendCustomerOtpView(APIView):
     def post(self, request, scanner_id):
         get_object_or_404(ShopScanner, scanner_id=scanner_id, is_active=True)
 
-        mobile = (request.data.get("mobile_number") or "").strip()
+        mobile = re.sub(r'\D', '', request.data.get("mobile_number") or "")
         if not re.match(r'^\d{10}$', mobile):
             return Response({"error": "Enter a valid 10-digit mobile number."}, status=400)
 
@@ -864,7 +864,7 @@ class VerifyCustomerOtpView(APIView):
     def post(self, request, scanner_id):
         scanner = get_object_or_404(ShopScanner, scanner_id=scanner_id, is_active=True)
 
-        mobile = (request.data.get("mobile_number") or "").strip()
+        mobile = re.sub(r'\D', '', request.data.get("mobile_number") or "")
         code   = (request.data.get("otp") or "").strip()
 
         session = OtpSession.objects.filter(
@@ -905,7 +905,7 @@ class SaveCustomerNameView(APIView):
     def post(self, request, scanner_id):
         scanner = get_object_or_404(ShopScanner, scanner_id=scanner_id, is_active=True)
 
-        mobile = (request.data.get("mobile_number") or "").strip()
+        mobile = re.sub(r'\D', '', request.data.get("mobile_number") or "")
         name   = (request.data.get("name") or "").strip()
 
         if not re.match(r'^\d{10}$', mobile):
