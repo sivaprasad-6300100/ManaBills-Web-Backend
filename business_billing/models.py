@@ -649,12 +649,12 @@ class GstPayment(models.Model):
 
 
 
-
 class GstITCBalance(models.Model):
-    user        = models.ForeignKey(User, on_delete=models.CASCADE)
-    year        = models.IntegerField()
-    opening_itc = models.DecimalField(max_digits=12, decimal_places=2, default=0)
-    updated_at  = models.DateTimeField(auto_now=True)
+    user               = models.ForeignKey(User, on_delete=models.CASCADE)
+    year               = models.IntegerField()
+    opening_itc        = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    consumed_stock_itc = models.DecimalField(max_digits=12, decimal_places=2, default=0)  # NEW
+    updated_at         = models.DateTimeField(auto_now=True)
     
     class Meta:
         unique_together = ["user", "year"]  # One record per user per year
@@ -681,3 +681,60 @@ class UserDeviceSession(models.Model):
 
     def __str__(self):
         return f"{self.user} — {self.device_name} ({self.device_id[:12]}...)"
+
+    
+
+
+class ITCEntry(models.Model):
+    """Manually added ITC entries (not from Product stock) — persists across sessions"""
+    STATUS_CHOICES = [
+        ("eligible", "Eligible"),
+        ("claimed",  "Claimed"),
+        ("pending",  "Pending"),
+        ("blocked",  "Blocked"),
+    ]
+    user           = models.ForeignKey(User, on_delete=models.CASCADE, related_name="itc_entries")
+    year           = models.IntegerField()
+    item           = models.CharField(max_length=255)
+    category       = models.CharField(max_length=100, blank=True, default="General")
+    qty            = models.DecimalField(max_digits=12, decimal_places=2, default=1)
+    unit           = models.CharField(max_length=20, blank=True, default="nos")
+    purchase_value = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    itc_rate       = models.DecimalField(max_digits=5, decimal_places=2, default=18)
+    itc_amount     = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    status         = models.CharField(max_length=15, choices=STATUS_CHOICES, default="eligible")
+    proof_file     = models.FileField(upload_to="itc_proofs/%Y/", null=True, blank=True)
+    proof_name     = models.CharField(max_length=255, blank=True, default="")
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["user", "year"], name="itcentry_user_year_idx")]
+
+    def save(self, *args, **kwargs):
+        if not self.itc_amount:
+            self.itc_amount = float(self.purchase_value) * float(self.itc_rate) / 100
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.item} — ₹{self.itc_amount} ({self.user})"
+
+
+class ITCHistoryEntry(models.Model):
+    """Audit log of Opening ITC add/subtract actions — persists across sessions"""
+    TYPE_CHOICES = [("add", "Added"), ("subtract", "Subtracted")]
+
+    user       = models.ForeignKey(User, on_delete=models.CASCADE, related_name="itc_history")
+    year       = models.IntegerField()
+    amount     = models.DecimalField(max_digits=12, decimal_places=2)
+    entry_type = models.CharField(max_length=10, choices=TYPE_CHOICES)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["user", "year"], name="itchist_user_year_idx")]
+
+    def __str__(self):
+        return f"{self.entry_type} ₹{self.amount} — {self.year} ({self.user})"

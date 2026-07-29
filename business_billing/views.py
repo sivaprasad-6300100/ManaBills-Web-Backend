@@ -9,7 +9,7 @@ from datetime import date
 from decimal import Decimal
 import razorpay
 from django.conf import settings
-from django.http import JsonResponse
+from django.http import JsonResponse, request
 from .serializers import PublicInvoiceSerializer
 from rest_framework.permissions import AllowAny
 from .models import Invoice
@@ -467,7 +467,7 @@ def gst_reports(request):
     def get_itc(product):
         if float(product.purchase_gst) > 0:
             return float(product.purchase_gst)
-        return float(product.purchase_price) * float(product.gst_rate) / 100
+        return float(product.purchase_price) * float(product.qty) * float(product.gst_rate) / 100
 
     # Total ITC from all products (for fallback distribution)
     total_itc = sum(get_itc(p) for p in all_products)
@@ -560,6 +560,80 @@ def mark_gst_paid(request):
         "month": month,
         "paid_date": str(payment.paid_date),
         "paid_amount": paid_amount,
+    })
+
+
+
+
+# ── Mark GST as Paid + Consume ITC (ATOMIC — replaces the old 2-call flow) ──
+@api_view(["POST"])
+@permission_classes([permissions.IsAuthenticated])
+def mark_gst_paid_and_consume_itc(request):
+    """
+    POST /api/business/gst-mark-paid-consume-itc/
+    Body: { year, month, gst_collected, effective_stock_itc, opening_itc }
+
+    Does both operations in a single DB transaction:
+    1. Records GstPayment (is_paid=True)
+    2. Debits ITC (stock first, then opening) and logs history
+    If anything fails, both roll back together — no drift possible.
+    """
+    from .models import GstPayment, GstITCBalance, ITCHistoryEntry
+
+    year   = int(request.data.get("year", date.today().year))
+    month  = int(request.data.get("month", date.today().month))
+    gst    = float(request.data.get("gst_collected", 0))
+    effective_stock_itc = float(request.data.get("effective_stock_itc", 0))
+    opening_itc_before  = float(request.data.get("opening_itc", 0))
+
+    total_itc_available = effective_stock_itc + opening_itc_before
+    net_payable = max(0.0, gst - total_itc_available)
+
+    itc_from_stock_used   = min(gst, effective_stock_itc)
+    remaining_gst          = gst - itc_from_stock_used
+    itc_from_opening_used = min(remaining_gst, opening_itc_before)
+    total_itc_used          = itc_from_stock_used + itc_from_opening_used
+    leftover                = total_itc_available - total_itc_used
+    new_opening_itc         = opening_itc_before - itc_from_opening_used
+
+    with db_transaction.atomic():
+        # 1. Mark GST as paid
+        payment, _ = GstPayment.objects.get_or_create(
+            user=request.user, year=year, month=month
+        )
+        payment.is_paid     = True
+        payment.paid_date   = date.today()
+        payment.paid_amount = net_payable
+        payment.save()
+
+        # 2. Debit ITC balance
+        balance_obj, _ = GstITCBalance.objects.get_or_create(
+            user=request.user, year=year
+        )
+        prev_consumed_stock = float(balance_obj.consumed_stock_itc)
+        balance_obj.opening_itc        = max(0.0, new_opening_itc)
+        balance_obj.consumed_stock_itc = prev_consumed_stock + itc_from_stock_used
+        balance_obj.save(update_fields=["opening_itc", "consumed_stock_itc"])
+
+        # 3. Log history if opening ITC was actually consumed
+        if itc_from_opening_used > 0:
+            ITCHistoryEntry.objects.create(
+                user=request.user, year=year,
+                amount=itc_from_opening_used, entry_type="subtract",
+            )
+
+    return Response({
+        "success": True,
+        "year": year,
+        "month": month,
+        "paid_date": str(payment.paid_date),
+        "paid_amount": net_payable,
+        "itc_from_stock_used": itc_from_stock_used,
+        "itc_from_opening_used": itc_from_opening_used,
+        "total_itc_used": total_itc_used,
+        "leftover_carried_forward": max(0.0, leftover),
+        "new_opening_itc": float(balance_obj.opening_itc),
+        "new_consumed_stock_itc": float(balance_obj.consumed_stock_itc),
     })
 
 # --------------------------------
@@ -1252,39 +1326,53 @@ class NextInvoiceIdView(APIView):
         return Response({"invoice_id": invoice_id})
 
 
-
+from .models import ShopProfile, Customer, Product, Invoice, InvoiceItem, StockTransaction, ITCHistoryEntry
 
 
 @api_view(["GET", "POST"])
 @permission_classes([permissions.IsAuthenticated])
 def itc_opening_balance(request):
     year = int(request.query_params.get("year", date.today().year))
-    
+
     if request.method == "GET":
         from .models import GstITCBalance
         try:
             obj = GstITCBalance.objects.get(user=request.user, year=year)
-            return Response({"opening_itc": float(obj.opening_itc)})
+            return Response({
+                "opening_itc": float(obj.opening_itc),
+                "consumed_stock_itc": float(obj.consumed_stock_itc),
+            })
         except GstITCBalance.DoesNotExist:
-            return Response({"opening_itc": 0.0})
-    
+            return Response({"opening_itc": 0.0, "consumed_stock_itc": 0.0})
+
     if request.method == "POST":
         from .models import GstITCBalance
-        amount = float(request.data.get("opening_itc", 0))
+        amount   = float(request.data.get("opening_itc", 0))
+        consumed = request.data.get("consumed_stock_itc", None)
         obj, _ = GstITCBalance.objects.update_or_create(
             user=request.user,
             year=year,
             defaults={"opening_itc": amount}
         )
-        return Response({"opening_itc": float(obj.opening_itc), "saved": True})
+        if consumed is not None:
+            obj.consumed_stock_itc = float(consumed)
+            obj.save(update_fields=["consumed_stock_itc"])
 
+        # ── Log history BEFORE returning, or it never runs ──
+        entry_type = request.data.get("history_type")
+        entry_amt  = request.data.get("history_amount")
+        if entry_type in ("add", "subtract") and entry_amt:
+            ITCHistoryEntry.objects.create(
+                user=request.user, year=year,
+                amount=abs(float(entry_amt)), entry_type=entry_type,
+            )
 
-
-
-
-
-
-
+        return Response({
+            "opening_itc": float(obj.opening_itc),
+            "consumed_stock_itc": float(obj.consumed_stock_itc),
+            "saved": True,
+        })
+    
 
 @api_view(["GET"])
 @permission_classes([permissions.IsAuthenticated])
@@ -1689,3 +1777,86 @@ class ProductImageUploadView(APIView):
         product.save(update_fields=["image_url"])
 
         return Response({"image_url": image_url}, status=200)
+
+
+
+
+
+
+
+
+
+
+
+
+from .models import ITCEntry, ITCHistoryEntry
+from .serializers import ITCEntrySerializer, ITCHistoryEntrySerializer
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
+
+
+class ITCEntryListCreateView(generics.ListCreateAPIView):
+    """
+    GET  /api/business/itc-entries/?year=2026   → list manual ITC entries for a year
+    POST /api/business/itc-entries/              → create new entry (JSON, no file yet)
+    """
+    serializer_class   = ITCEntrySerializer
+    permission_classes = [permissions.IsAuthenticated]
+    parser_classes      = [JSONParser, MultiPartParser, FormParser]
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx["request"] = self.request
+        return ctx
+
+    def get_queryset(self):
+        year = self.request.query_params.get("year", date.today().year)
+        return ITCEntry.objects.filter(user=self.request.user, year=year)
+
+    def perform_create(self, serializer):
+        year = self.request.data.get("year", date.today().year)
+        serializer.save(user=self.request.user, year=year)
+
+
+class ITCEntryDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """
+    PATCH  /api/business/itc-entries/<id>/   → update fields or upload proof (multipart)
+    DELETE /api/business/itc-entries/<id>/   → remove entry
+    """
+    serializer_class   = ITCEntrySerializer
+    permission_classes = [permissions.IsAuthenticated]
+    parser_classes      = [JSONParser, MultiPartParser, FormParser]
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx["request"] = self.request
+        return ctx
+
+    def get_queryset(self):
+        return ITCEntry.objects.filter(user=self.request.user)
+
+    def patch(self, request, *args, **kwargs):
+        entry = self.get_object()
+        file = request.FILES.get("proof_file")
+        if file:
+            entry.proof_file = file
+            entry.proof_name = file.name
+            entry.save(update_fields=["proof_file", "proof_name", "updated_at"])
+            return Response(ITCEntrySerializer(entry, context={"request": request}).data)
+        # clearing proof
+        if request.data.get("clear_proof"):
+            entry.proof_file.delete(save=False)
+            entry.proof_file = None
+            entry.proof_name = ""
+            entry.save(update_fields=["proof_file", "proof_name", "updated_at"])
+            return Response(ITCEntrySerializer(entry, context={"request": request}).data)
+        return super().patch(request, *args, **kwargs)
+
+
+class ITCHistoryListView(generics.ListAPIView):
+    """GET /api/business/itc-history/?year=2026"""
+    serializer_class   = ITCHistoryEntrySerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        year = self.request.query_params.get("year", date.today().year)
+        return ITCHistoryEntry.objects.filter(user=self.request.user, year=year)

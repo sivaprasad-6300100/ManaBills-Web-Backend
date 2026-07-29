@@ -570,3 +570,36 @@ class DashboardStatsSerializer(serializers.Serializer):
     stock_value          = serializers.FloatField()
     low_stock_count      = serializers.IntegerField()
     recent_invoices      = serializers.ListField(default=[])
+
+
+from .models import ITCEntry, ITCHistoryEntry
+
+class ITCEntrySerializer(serializers.ModelSerializer):
+    proof_url = serializers.SerializerMethodField()     
+
+    class Meta:
+        model  = ITCEntry
+        fields = [
+            "id", "year", "item", "category", "qty", "unit",
+            "purchase_value", "itc_rate", "itc_amount", "status",
+            "proof_file", "proof_name", "proof_url",
+            "created_at", "updated_at",
+        ]
+        read_only_fields = ["id", "itc_amount", "proof_url", "created_at", "updated_at"]
+        extra_kwargs = {"proof_file": {"write_only": True, "required": False}}
+
+    def get_proof_url(self, obj):
+        request = self.context.get("request")
+        if obj.proof_file and request:
+            return request.build_absolute_uri(obj.proof_file.url)
+        return None
+
+
+class ITCHistoryEntrySerializer(serializers.ModelSerializer):
+    class Meta:
+        model  = ITCHistoryEntry
+        fields = ["id", "year", "amount", "entry_type", "created_at"]
+        read_only_fields = fields
+
+
+

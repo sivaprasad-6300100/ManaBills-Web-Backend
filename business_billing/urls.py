@@ -5,6 +5,7 @@ from .views import PublicShopView, PlaceOrderView, PublicOrdersByMobileView,Shop
 
 
 
+
 urlpatterns = [
 
     path("shop-profile/",           views.ShopProfileView.as_view()),
@@ -22,6 +23,8 @@ urlpatterns = [
     path("stock-transactions/",     views.StockTransactionListView.as_view()),
     path("gst-reports/",            views.gst_reports),
     path("gst-mark-paid/", views.mark_gst_paid),
+    path("gst-invoice-export/",     views.gst_invoice_export),
+    path("gst-mark-paid-consume-itc/", views.mark_gst_paid_and_consume_itc),
     path("dashboard/",              views.dashboard_stats),     
     path("orders/",                 views.CustomerOrderListView.as_view()),      
     path("orders/<int:pk>/",        views.CustomerOrderDetailView.as_view()),    
@@ -61,8 +64,13 @@ urlpatterns = [
     # path("devices/<str:device_id>/",  DeviceListView.as_view()),
 
     path("chart-stats/", views.chart_stats, name="chart-stats"),
-     path("shop-profile/logo/", ShopLogoUploadView.as_view(), name="shop-logo-upload"),
-     path("products/<int:pk>/image/", ProductImageUploadView.as_view(), name="product-image-upload"),
+    path("shop-profile/logo/", ShopLogoUploadView.as_view(), name="shop-logo-upload"),
+    path("products/<int:pk>/image/", ProductImageUploadView.as_view(), name="product-image-upload"),
+
+
+    path("itc-entries/", views.ITCEntryListCreateView.as_view(), name="itc-entries"),
+    path("itc-entries/<int:pk>/", views.ITCEntryDetailView.as_view(), name="itc-entry-detail"),
+    path("itc-history/", views.ITCHistoryListView.as_view(), name="itc-history"),
 ]
 
 
