@@ -10,6 +10,13 @@ from .models import Subscription
 from .serializers import SubscriptionSerializer
 
 
+# Total payable = plan price + platform fee (same as CheckoutSubscription.jsx)
+PLAN_TOTALS = {
+    "business_basic": {"1 Year": 2014, "6 Months": 1009, "1 Month": 204},
+    "business_pro":   {"1 Year": 2814, "6 Months": 1609, "1 Month": 304},
+}
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # GET  /api/subscriptions/my/
 # Returns all subscriptions for the logged-in user.
@@ -51,6 +58,28 @@ def activate_subscription(request):
             {"error": "module is required"},
             status=status.HTTP_400_BAD_REQUEST,
         )
+    if not payment_id:
+        return Response(
+            {"error": "payment_id is required"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    expected = PLAN_TOTALS.get(plan_key, {}).get(duration)
+    try:
+        amount_ok = expected is not None and int(float(amount)) == expected
+    except (TypeError, ValueError):
+        amount_ok = False
+    if not amount_ok:
+        return Response(
+            {"error": "Invalid plan or amount"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if Subscription.objects.filter(payment_id=payment_id).exists():
+        return Response(
+            {"error": "This payment was already used"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
     
     existing = Subscription.objects.filter(
         user=request.user,
@@ -197,7 +226,7 @@ def activate_free_trial(request):
     """
     POST /api/subscriptions/free-trial/
     Body: { module: "business" }
-    Gives 5-day free trial — only if user has never had one before.
+    Gives 30-day (1 month) free trial — only if user has never had one before.
     """
     module = request.data.get("module", "business")
 
@@ -224,7 +253,7 @@ def activate_free_trial(request):
         module=module,
         defaults={
             "plan_key":   "free_trial",
-            "duration":   "FREE_TRIAL",   # → 5 days
+            "duration":   "FREE_TRIAL",   # → 30 days
             "status":     "active",
             "payment_id": "",
             "amount_paid": 0,
