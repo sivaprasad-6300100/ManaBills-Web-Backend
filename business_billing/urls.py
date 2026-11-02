@@ -71,6 +71,8 @@ urlpatterns = [
     path("itc-entries/", views.ITCEntryListCreateView.as_view(), name="itc-entries"),
     path("itc-entries/<int:pk>/", views.ITCEntryDetailView.as_view(), name="itc-entry-detail"),
     path("itc-history/", views.ITCHistoryListView.as_view(), name="itc-history"),
+
+    path("shop/<str:scanner_id>/cancel-unpaid/",     views.cancel_unpaid_order),
 ]
 
 

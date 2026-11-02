@@ -748,14 +748,24 @@ class PlaceOrderView(APIView):
         order = serializer.save()
  
         # Notify shop owner
-        ShopNotification.objects.create(
-            user       = scanner.user,
-            order      = order,
-            notif_type = "new_order",
-            message    = f"New order {order.order_id} from {order.customer_name} — ₹{order.subtotal}",
+                # Online payment → hide order from owner until Razorpay payment is verified
+        needs_online = (
+            request.data.get("payment_method") == "razorpay"
+            and Decimal(str(request.data.get("advance") or 0)) > 0
         )
- 
+        if needs_online:
+            order.payment_status = "awaiting_payment"
+            order.save(update_fields=["payment_status"])
+        else:
+            ShopNotification.objects.create(
+                user       = scanner.user,
+                order      = order,
+                notif_type = "new_order",
+                message    = f"New order {order.order_id} from {order.customer_name} — ₹{order.subtotal}",
+            )
+
         return Response(CustomerOrderReadSerializer(order).data, status=status.HTTP_201_CREATED)
+
 
 
 
@@ -765,7 +775,7 @@ class CustomerOrderListView(generics.ListAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        qs            = CustomerOrder.objects.filter(user=self.request.user).prefetch_related("items")
+        qs            = CustomerOrder.objects.filter(user=self.request.user).exclude(payment_status="awaiting_payment").prefetch_related("items")
         status_filter = self.request.query_params.get("status")  # ← renamed
         if status_filter:
             qs = qs.filter(status=status_filter)
@@ -897,7 +907,7 @@ class PublicOrdersByMobileView(APIView):
         orders = CustomerOrder.objects.filter(
             scanner         = scanner,
             customer_mobile = mobile,
-        ).prefetch_related("items").order_by("-created_at")[:20]
+        ).exclude(payment_status="awaiting_payment").prefetch_related("items").order_by("-created_at")[:20]
  
         return Response(CustomerOrderReadSerializer(orders, many=True).data)
 
@@ -1114,21 +1124,27 @@ def verify_payment(request, scanner_id=None):
         return JsonResponse({"status": "failed", "detail": "Signature mismatch"}, status=400)
  
     # Update order payment status
-    order_ref = str(data.get("order_id", "")).strip()
-    if order_ref:
-        from .models import CustomerOrder
-        updated = 0
-        try:
-            updated = CustomerOrder.objects.filter(id=int(order_ref)).update(
-                payment_status="paid",
-                payment_id=data["razorpay_payment_id"],
-            )
-        except (ValueError, TypeError):
-            pass
-        if not updated:
-            CustomerOrder.objects.filter(order_id=order_ref).update(
-                payment_status="paid",
-                payment_id=data["razorpay_payment_id"],
+        # Mark paid + notify the shop owner (only now, after payment is verified)
+    with db_transaction.atomic():
+        order = (
+            CustomerOrder.objects.select_for_update()
+            .filter(razorpay_order_id=data["razorpay_order_id"])
+            .first()
+        )
+        if not order:
+            return JsonResponse({"status": "error", "detail": "Order not found"}, status=404)
+
+        first_time = order.payment_status != "paid"
+        order.payment_status = "paid"
+        order.payment_id = data["razorpay_payment_id"]
+        order.save(update_fields=["payment_status", "payment_id"])
+
+        if first_time:
+            ShopNotification.objects.create(
+                user       = order.user,
+                order      = order,
+                notif_type = "new_order",
+                message    = f"New order {order.order_id} from {order.customer_name} — ₹{order.subtotal}",
             )
  
     return JsonResponse({"status": "verified"})
@@ -1160,6 +1176,41 @@ def public_invoice_view(request, invoice_id):
             pass
 
     return Response(data)
+
+
+def release_unpaid_order(order):
+    """Delete an unpaid order and put its stock back."""
+    for item in order.items.all():
+        if item.product_id:
+            Product.objects.filter(pk=item.product_id).update(qty=F("qty") + item.qty)
+    order.delete()
+
+
+@csrf_exempt
+def cancel_unpaid_order(request, scanner_id=None):
+    """
+    POST /api/public/shop/<scanner_id>/cancel-unpaid/
+    Body: { order_id }
+    Called when the customer closes Razorpay without paying.
+    """
+    if request.method != "POST":
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+    try:
+        data = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Invalid JSON"}, status=400)
+
+    ref = str(data.get("order_id", "")).strip()
+    with db_transaction.atomic():
+        order = (
+            CustomerOrder.objects.select_for_update()
+            .filter(scanner__scanner_id=scanner_id, order_id=ref,
+                    payment_status="awaiting_payment")
+            .first()
+        )
+        if order:
+            release_unpaid_order(order)
+    return JsonResponse({"status": "released"})
 
 
 @api_view(["GET"])
