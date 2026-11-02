@@ -441,10 +441,16 @@ class StockTransactionListView(generics.ListAPIView):
 def gst_reports(request):
     year = int(request.query_params.get("year", date.today().year))
 
-    # All GST invoices for this year
+    # GST invoices only (used for money totals + ITC)
     gst_invoices = Invoice.objects.filter(
         user=request.user,
         is_gst=True,
+        created_at__year=year,
+    )
+
+    # ALL invoices (GST + non-GST) — used for counts so B2C is never hidden
+    all_invoices = Invoice.objects.filter(
+        user=request.user,
         created_at__year=year,
     )
 
@@ -483,13 +489,16 @@ def gst_reports(request):
     for idx, month_name in enumerate(MONTHS):
         month_num      = idx + 1
         month_invoices = gst_invoices.filter(created_at__month=month_num)
-        invoice_count  = month_invoices.count()
+        month_all      = all_invoices.filter(created_at__month=month_num)
+        gst_invoice_count = month_invoices.count()   # GST invoices only
+        invoice_count     = month_all.count()        # all invoices
         taxable_value  = float(month_invoices.aggregate(t=Sum("subtotal"))["t"] or 0)
         gst_collected  = float(month_invoices.aggregate(g=Sum("gst_amt"))["g"] or 0)
 
-        # B2B = customer has GSTIN, B2C = no GSTIN
-        b2b_count = month_invoices.exclude(customer_gst="").count()
-        b2c_count = month_invoices.filter(customer_gst="").count()
+        # B2B = GST invoice with customer GSTIN
+        # B2C = any invoice (GST or non-GST) without customer GSTIN
+        b2b_count = month_invoices.exclude(customer_gst="").exclude(customer_gst__isnull=True).count()
+        b2c_count = month_all.filter(Q(customer_gst="") | Q(customer_gst__isnull=True)).count()
 
         # ITC: first try products with purchase_date in this month
         dated_itc = sum(
@@ -500,7 +509,7 @@ def gst_reports(request):
         )
 
         # Fallback: if no purchase_date set, distribute evenly across invoice months
-        if dated_itc == 0 and invoice_count > 0:
+        if dated_itc == 0 and gst_invoice_count > 0:
             dated_itc = total_itc / active_month_count
 
         itc_eligible = dated_itc
@@ -1388,7 +1397,6 @@ def gst_invoice_export(request):
 
     qs = Invoice.objects.filter(
         user=request.user,
-        is_gst=True,
         created_at__year=year,
     ).prefetch_related("items")
 
@@ -1396,8 +1404,10 @@ def gst_invoice_export(request):
         qs = qs.filter(created_at__month=int(month))
 
     if gst_type == "b2b":
-        qs = qs.exclude(customer_gst="").exclude(customer_gst__isnull=True)
+        # B2B needs a GST invoice + customer GSTIN
+        qs = qs.filter(is_gst=True).exclude(customer_gst="").exclude(customer_gst__isnull=True)
     else:
+        # B2C = no customer GSTIN (GST and non-GST invoices both)
         qs = qs.filter(Q(customer_gst="") | Q(customer_gst__isnull=True))
 
     qs = qs.order_by("created_at")
@@ -1410,6 +1420,21 @@ def gst_invoice_export(request):
         gst_amt     = float(inv.gst_amt or 0)
         subtotal    = float(inv.subtotal or 0)
         total       = float(inv.total or 0)
+
+        # Old invoices saved with NO GST (mostly B2C): work out the GST that is
+        # inside the total using each item's gst_rate.
+        # REPORT ONLY — the saved invoice and customer view are NOT changed.
+        if gst_amt == 0 and total > 0:
+            item_base = sum(float(it.qty or 0) * float(it.price or 0) for it in items)
+            if item_base > 0:
+                tax_part = sum(
+                    float(it.qty or 0) * float(it.price or 0) * float(it.gst_rate or 0)
+                    / (100 + float(it.gst_rate or 0))
+                    for it in items
+                )
+                gst_amt  = round(total * tax_part / item_base, 2)
+                subtotal = round(total - gst_amt, 2)
+
         cgst        = round(gst_amt / 2, 2)
         sgst        = round(gst_amt / 2, 2)
 
